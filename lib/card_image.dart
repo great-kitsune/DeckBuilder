@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 import 'api_request.dart';
+import 'catalog.dart';
 
 Future<List<Directory>> _directories() async => [
   Directory('${(await getApplicationCacheDirectory()).path}/card_images'),
@@ -188,4 +189,53 @@ class _EditionImageState extends State<EditionImage> {
       );
     },
   );
+}
+
+class CatalogThumbnail extends StatelessWidget {
+  final Catalog catalog;
+  final String id;
+  final String? edition;
+  final bool spoiler;
+  final int revision;
+  const CatalogThumbnail(
+    this.catalog,
+    this.id,
+    this.edition, {
+    required this.spoiler,
+    required this.revision,
+    super.key,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final local = spoiler
+        ? (catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
+                id,
+              ]).firstOrNull?['photo']
+              as Uint8List?)
+        : null;
+    final print = catalog.db
+        .select(
+          """SELECT json_extract(payload,'\$.image') image,
+      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
+          [id, edition, edition],
+        )
+        .firstOrNull;
+    final path = print?['image'] as String?;
+    const fallback = Icon(Icons.image_outlined);
+    return local != null
+        ? Image.memory(
+            local,
+            cacheWidth: 260,
+            errorBuilder: (_, _, _) => fallback,
+          )
+        : path != null && path.startsWith('/cards/images/')
+        ? EditionImage(
+            path,
+            print?['version']?.toString() ?? '',
+            thumbnail: true,
+            key: ValueKey((path, print?['version'], revision)),
+          )
+        : fallback;
+  }
 }

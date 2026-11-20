@@ -9,11 +9,19 @@ import 'effect_text.dart';
 class SearchView extends StatefulWidget {
   final Catalog catalog;
   final int revision;
-  final VoidCallback onAdd;
+  final VoidCallback? onAdd, onCatalogChange;
+  final void Function(String card, String? edition)? onPick;
+  final DeckCounts deckCounts;
+  final DeckCost? requiredCost;
+
   const SearchView(
     this.catalog, {
     required this.revision,
-    required this.onAdd,
+    this.onAdd,
+    this.onCatalogChange,
+    this.onPick,
+    this.requiredCost,
+    this.deckCounts = const {},
     super.key,
   });
   @override
@@ -33,14 +41,22 @@ class _SearchViewState extends State<SearchView> {
 
   void refresh() {
     options = widget.catalog.options();
-    rows = widget.catalog.search(filters);
+    rows = widget.catalog.search(filters, requiredCost: widget.requiredCost);
   }
 
-  void search() => setState(() => rows = widget.catalog.search(filters));
+  void search() => setState(
+    () => rows = widget.catalog.search(
+      filters,
+      requiredCost: widget.requiredCost,
+    ),
+  );
   @override
   void didUpdateWidget(SearchView old) {
     super.didUpdateWidget(old);
-    if (widget.revision != old.revision) refresh();
+    if (widget.revision != old.revision ||
+        widget.requiredCost != old.requiredCost) {
+      refresh();
+    }
   }
 
   @override
@@ -115,16 +131,17 @@ class _SearchViewState extends State<SearchView> {
               ),
             ],
           ),
-        DropdownButtonFormField(
-          key: ObjectKey(filters),
-          initialValue: filters.costType,
-          decoration: const InputDecoration(labelText: '비용 종류'),
-          items: [
-            for (final v in ['', 'memory', 'reserve', 'none'])
-              DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
-          ],
-          onChanged: (v) => change(() => filters.costType = v!),
-        ),
+        if (widget.requiredCost == null)
+          DropdownButtonFormField(
+            key: ObjectKey(filters),
+            initialValue: filters.costType,
+            decoration: const InputDecoration(labelText: '비용 종류'),
+            items: [
+              for (final v in ['', 'memory', 'reserve', 'none'])
+                DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
+            ],
+            onChanged: (v) => change(() => filters.costType = v!),
+          ),
         for (final (label, value, assign)
             in <(String, int?, void Function(int?))>[
               ('최소 비용', filters.minCost, (v) => filters.minCost = v),
@@ -204,11 +221,12 @@ class _SearchViewState extends State<SearchView> {
                           ),
                         ),
                       ),
-                    TextButton.icon(
-                      onPressed: widget.onAdd,
-                      icon: const Icon(Icons.add),
-                      label: const Text('스포일러 추가'),
-                    ),
+                    if (widget.onAdd != null)
+                      TextButton.icon(
+                        onPressed: widget.onAdd,
+                        icon: const Icon(Icons.add),
+                        label: const Text('스포일러 추가'),
+                      ),
                   ],
                 ),
                 Expanded(
@@ -218,9 +236,11 @@ class _SearchViewState extends State<SearchView> {
                       ? GridView.builder(
                           padding: const EdgeInsets.all(8),
                           gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                              SliverGridDelegateWithMaxCrossAxisExtent(
                                 maxCrossAxisExtent: 170,
-                                mainAxisExtent: 210,
+                                mainAxisExtent: widget.onPick == null
+                                    ? 210
+                                    : 260,
                                 crossAxisSpacing: 8,
                                 mainAxisSpacing: 8,
                               ),
@@ -246,55 +266,50 @@ class _SearchViewState extends State<SearchView> {
     final spoiler = r['spoiler'] == 1;
     final subtitle = edition == null
         ? ''
-        : [r['set_code'], r['rarity']].nonNulls.join(' · ');
+        : [
+            r['set_code'],
+            if (r['number'] != null) '#${r['number']}',
+            r['rarity'],
+          ].nonNulls.join(' · ');
     Future<void> open() async {
-      await Navigator.push(
+      final changed = await Navigator.push<bool>(
         context,
-        MaterialPageRoute<void>(
+        MaterialPageRoute<bool>(
           builder: (_) => CardDetail(widget.catalog, id, edition),
         ),
       );
-      if (mounted) setState(refresh);
+      if (!mounted) return;
+      if (changed == true) widget.onCatalogChange?.call();
+      setState(refresh);
     }
 
+    final pick = widget.onPick;
+    final cost = DeckCost.parse(r['cost_type']);
+    final copies =
+        widget.deckCounts[(cost, normalizedName(name))] ?? const ZoneCopies();
+    final add = pick == null
+        ? null
+        : IconButton(
+            tooltip: '$name 한 장 추가',
+            icon: const Icon(Icons.add_circle_outline),
+            onPressed: copies.allows(cost, 1) ? () => pick(id, edition) : null,
+          );
     if (!grid) {
       return ListTile(
         title: Text(name),
-        subtitle: subtitle.isEmpty ? null : Text(subtitle),
-        trailing: spoiler ? const Chip(label: Text('스포일러')) : null,
+        subtitle: pick == null
+            ? (subtitle.isEmpty ? null : Text(subtitle))
+            : Text(
+                [
+                  if (subtitle.isNotEmpty) subtitle,
+                  if (spoiler) '스포일러',
+                  copies.label(cost),
+                ].join(' · '),
+              ),
+        trailing: add ?? (spoiler ? const Chip(label: Text('스포일러')) : null),
         onTap: open,
       );
     }
-    final catalog = widget.catalog;
-    final local = spoiler
-        ? catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
-                id,
-              ]).single['photo']
-              as Uint8List?
-        : null;
-    final print = catalog.db
-        .select(
-          """SELECT json_extract(payload,'\$.image') image,
-      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
-          [id, edition, edition],
-        )
-        .firstOrNull;
-    final path = print?['image'] as String?;
-    const fallback = Icon(Icons.image_outlined);
-    final image = local != null
-        ? Image.memory(
-            local,
-            cacheWidth: 260,
-            errorBuilder: (_, _, _) => fallback,
-          )
-        : path != null && path.startsWith('/cards/images/')
-        ? EditionImage(
-            path,
-            print?['version']?.toString() ?? '',
-            thumbnail: true,
-            key: ValueKey((path, print?['version'], widget.revision)),
-          )
-        : fallback;
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -303,11 +318,29 @@ class _SearchViewState extends State<SearchView> {
           padding: const EdgeInsets.all(6),
           child: Column(
             children: [
-              Expanded(child: Center(child: image)),
+              Expanded(
+                child: Center(
+                  child: CatalogThumbnail(
+                    widget.catalog,
+                    id,
+                    edition,
+                    spoiler: spoiler,
+                    revision: widget.revision,
+                  ),
+                ),
+              ),
               Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
               if (subtitle.isNotEmpty)
                 Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
               if (spoiler) const Text('스포일러'),
+              if (add != null)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Flexible(child: Text(copies.label(cost))),
+                    add,
+                  ],
+                ),
             ],
           ),
         ),
@@ -321,12 +354,54 @@ class CardDetail extends StatelessWidget {
   final String id;
   final String? edition;
   const CardDetail(this.catalog, this.id, this.edition, {super.key});
+  Future<void> confirmDelete(BuildContext context, String name) async {
+    final usage = catalog.spoilerUsage(id);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('스포일러 카드 삭제'),
+        content: Text(
+          [
+            '‘$name’ 카드와 등록한 사진을 삭제하시겠습니까?',
+            if (usage.decks > 0)
+              '이 카드를 사용 중인 덱 ${usage.decks}개에서 총 ${usage.copies}장도 제거됩니다.',
+          ].join('\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      catalog.deleteSpoiler(id, confirmedUsage: usage);
+      Navigator.pop(context, true);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('카드 삭제 실패 · $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final row = catalog.db.select(
       'SELECT * FROM library_cards WHERE id=COALESCE((SELECT official_id FROM replacements WHERE local_id=?),?)',
       [id, id],
-    ).single;
+    ).firstOrNull;
+    if (row == null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: Text('삭제된 카드입니다.')),
+      );
+    }
     final c = jsonDecode(row['payload'] as String) as Json;
     final photo = row['photo'] as Uint8List?;
     final prints = catalog.db.select(
@@ -403,11 +478,17 @@ class CardDetail extends StatelessWidget {
               TextButton(
                 onPressed: () {
                   catalog.transaction(() => catalog.resolve(id, candidate));
-                  Navigator.pop(context);
+                  Navigator.pop(context, true);
                 },
                 child: Text(
                   "공식 카드로 교체 · ${catalog.db.select("SELECT group_concat(set_code || ' #' || number, ', ') prints FROM editions WHERE card=?", [candidate]).single['prints'] ?? candidate} ($candidate)",
                 ),
+              ),
+            if (row['spoiler'] == 1 && row['active'] != 0)
+              OutlinedButton.icon(
+                onPressed: () => confirmDelete(context, c['name'] as String),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('카드 삭제'),
               ),
           ],
         ),

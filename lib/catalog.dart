@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:crypto/crypto.dart';
 
 part 'integrity.dart';
+part 'decks.dart';
 
 typedef Json = Map<String, dynamic>;
 const facets = [
@@ -55,6 +56,14 @@ class Catalog {
       ''');
     }
     db.execute('''
+      CREATE TABLE IF NOT EXISTS decks(id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(trim(name))>0));
+      CREATE TABLE IF NOT EXISTS deck_entries(
+        deck INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        zone TEXT NOT NULL CHECK(zone IN ('material','main','sideboard')),
+        card TEXT NOT NULL, edition TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity>0),
+        PRIMARY KEY(deck,zone,card,edition)
+      );
+      CREATE INDEX IF NOT EXISTS deck_entries_by_card ON deck_entries(card);
       CREATE TABLE IF NOT EXISTS retired_editions(id TEXT PRIMARY KEY, card TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS replacements(local_id TEXT PRIMARY KEY, official_id TEXT NOT NULL REFERENCES cards(id));
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -194,7 +203,7 @@ class Catalog {
     return result;
   }
 
-  List<Row> search(Filters f) {
+  List<Row> search(Filters f, {DeckCost? requiredCost}) {
     final args = <Object?>[];
     final clauses = ['c.active=1'];
     if (f.text.trim().isNotEmpty) {
@@ -207,9 +216,10 @@ class Catalog {
     }
     final cost = "json_extract(c.payload,'\$.cost.value')";
     final level = "json_extract(c.payload,'\$.level')";
-    if (f.costType.isNotEmpty) {
+    final costType = requiredCost?.name ?? f.costType;
+    if (costType.isNotEmpty) {
       clauses.add("json_extract(c.payload,'\$.cost.type')=?");
-      args.add(f.costType);
+      args.add(costType);
     }
     if (f.minCost != null || f.maxCost != null) {
       clauses.add(
@@ -266,7 +276,7 @@ class Catalog {
       }
     }
     return db.select(
-      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
+      'SELECT c.id,c.name,c.spoiler,json_extract(c.payload,\'\$.cost.type\') cost_type,${f.editions ? 'e.id AS edition,e.set_code,e.number,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
       args,
     );
   }
@@ -303,6 +313,38 @@ class Catalog {
     return matching.isEmpty ? named : matching;
   }
 
+  ({int decks, int copies}) spoilerUsage(String id) {
+    final row = db.select(
+      'SELECT count(DISTINCT deck) decks,coalesce(sum(quantity),0) copies FROM deck_entries WHERE card=?',
+      [id],
+    ).single;
+    return (decks: row['decks'] as int, copies: row['copies'] as int);
+  }
+
+  void deleteSpoiler(
+    String id, {
+    required ({int decks, int copies}) confirmedUsage,
+  }) {
+    transaction(() {
+      if (db
+          .select(
+            '''SELECT 1 FROM spoiler_cards WHERE id=? AND active IN (1,2)
+        AND NOT EXISTS (SELECT 1 FROM replacements WHERE local_id=?)''',
+            [id, id],
+          )
+          .isEmpty) {
+        throw StateError('이미 삭제되었거나 공식 카드로 교체된 카드입니다.');
+      }
+      if (spoilerUsage(id) != confirmedUsage) {
+        throw StateError('덱 구성이 변경되었습니다. 삭제할 내용을 다시 확인하세요.');
+      }
+      db.execute('DELETE FROM deck_entries WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_tags WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_editions WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_cards WHERE id=?', [id]);
+    });
+  }
+
   void resolve(String localId, String officialId) {
     // A background install may have resolved a detail page that was left open.
     if (db.select('SELECT 1 FROM replacements WHERE local_id=?', [
@@ -310,6 +352,7 @@ class Catalog {
     ]).isNotEmpty) {
       return;
     }
+    _replaceDeckCard(localId, officialId);
     db.execute('INSERT INTO replacements VALUES(?,?)', [localId, officialId]);
     db.execute('UPDATE spoiler_cards SET active=0 WHERE id=?', [localId]);
   }

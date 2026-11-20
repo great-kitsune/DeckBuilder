@@ -7,14 +7,19 @@ import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
 import 'package:sqlite3/sqlite3.dart';
 
-Json card(String id, String name, {List<Json> prints = const []}) => {
+Json card(
+  String id,
+  String name, {
+  List<Json> prints = const [],
+  String cost = 'memory',
+}) => {
   'uuid': id,
   'name': name,
   'speed': true,
   'types': ['ALLY', 'ITEM'],
   'subtypes': ['MAGE'],
   'effect_raw': 'Recover 1',
-  'cost': {'type': 'memory', 'value': '2'},
+  'cost': {'type': cost, 'value': '2'},
   'editions': prints,
 };
 Json edition(String id, String set, String number, int rarity) => {
