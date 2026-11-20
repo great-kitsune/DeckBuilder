@@ -1,80 +1,21 @@
-import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
 
 import 'package:http/http.dart' as http;
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog.dart';
+import 'offline_images.dart';
+import 'api_request.dart';
 
-class WifiRequired implements Exception {
-  const WifiRequired();
-  @override
-  String toString() => 'Wi-Fi 연결이 필요합니다.';
-}
+enum InstallMode { text, full }
 
 class OfficialApi {
   final http.Client client;
-  final Future<bool> Function()? networkAllowed;
-  OfficialApi(this.client, {this.networkAllowed});
-
-  Future<http.Response> _get(Uri uri) async {
-    final allowed = networkAllowed;
-    if (allowed != null && !await allowed()) throw const WifiRequired();
-    final abort = Completer<void>();
-    bool checking = false;
-    final monitor = allowed == null
-        ? null
-        : Timer.periodic(const Duration(milliseconds: 500), (_) async {
-            if (checking || abort.isCompleted) return;
-            checking = true;
-            try {
-              if (!await allowed() && !abort.isCompleted) abort.complete();
-            } catch (_) {
-              if (!abort.isCompleted) abort.complete();
-            } finally {
-              checking = false;
-            }
-          });
-    try {
-      final request = http.AbortableRequest(
-        'GET',
-        uri,
-        abortTrigger: abort.future,
-      );
-      final response = await client
-          .send(request)
-          .then(http.Response.fromStream)
-          .timeout(const Duration(seconds: 40));
-      if (abort.isCompleted) throw const WifiRequired();
-      return response;
-    } on http.RequestAbortedException {
-      throw const WifiRequired();
-    } finally {
-      monitor?.cancel();
-      if (!abort.isCompleted) abort.complete();
-    }
-  }
-
+  OfficialApi(this.client);
   Future<dynamic> read(String path, [Map<String, String>? query]) async {
     final uri = Uri.https('api.gatcg.com', path, query);
-    for (var attempt = 0; ; attempt++) {
-      try {
-        final response = await _get(uri);
-        if (response.statusCode == 200) {
-          return jsonDecode(utf8.decode(response.bodyBytes));
-        }
-        if (response.statusCode == 429 || response.statusCode >= 500) {
-          throw HttpException(
-            '서버가 응답하지 않습니다 (HTTP ${response.statusCode})',
-            uri: uri,
-          );
-        }
-        throw FormatException('카드 API 오류 (HTTP ${response.statusCode})');
-      } on Exception catch (e) {
-        if (e is WifiRequired || e is FormatException || attempt >= 2) rethrow;
-        await Future<void>.delayed(Duration(seconds: 1 << attempt));
-      }
-    }
+    final response = await getFromApi(client, uri);
+    return jsonDecode(utf8.decode(response.bodyBytes));
   }
 }
 
@@ -169,42 +110,53 @@ Future<void> collect(
 Future<void> updateCatalog(
   String path,
   void Function(String) report, {
-  Future<bool> Function()? networkAllowed,
+  InstallMode mode = InstallMode.text,
+  http.Client? client,
 }) async {
   final lock = await File('$path.sync-lock').open(mode: FileMode.append);
+  final httpClient = client ?? http.Client();
   try {
     await lock.lock(FileLock.exclusive);
-    final scratch = File('$path.incoming');
-    final client = http.Client();
+    final catalog = Catalog(sqlite3.open(path));
     try {
-      // SQLite rolls back interrupted writes when opening the staging database.
-      final stage = Catalog(sqlite3.open(scratch.path));
-      try {
-        stage.transaction(() {
-          stage.db.execute(
-            'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
-          );
-        });
-        await collect(
-          stage,
-          OfficialApi(client, networkAllowed: networkAllowed),
-          report,
-        );
-      } finally {
-        stage.db.close();
+      final addImagesOnly =
+          mode == InstallMode.full &&
+          catalog.updated != null &&
+          !catalog.imagesComplete;
+      if (!addImagesOnly) {
+        final scratch = File('$path.incoming');
+        try {
+          final stage = Catalog(sqlite3.open(scratch.path));
+          try {
+            stage.transaction(
+              () => stage.db.execute(
+                'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
+              ),
+            );
+            await collect(stage, OfficialApi(httpClient), report);
+          } finally {
+            stage.db.close();
+          }
+          report('텍스트 DB 검증 완료 · 적용 중');
+          catalog.publish(scratch.path);
+        } finally {
+          if (await scratch.exists()) await scratch.delete();
+        }
       }
-      report('검증 완료 · 적용 중');
-      final current = Catalog(sqlite3.open(path));
-      try {
-        current.publish(scratch.path);
-      } finally {
-        current.db.close();
+      final directory = offlineImageDirectory(File(path).parent);
+      catalog.setMetadata('imageMode', mode.name);
+      if (mode == InstallMode.full) {
+        report('이미지 목록 확인 중');
+        await installImages(catalog, directory, httpClient, report);
+        catalog.setMetadata('offlineImagesFor', catalog.updated!);
+      } else if (await directory.exists()) {
+        await directory.delete(recursive: true);
       }
     } finally {
-      client.close();
-      if (await scratch.exists()) await scratch.delete();
+      catalog.db.close();
     }
   } finally {
+    if (client == null) httpClient.close();
     await lock.close();
   }
 }

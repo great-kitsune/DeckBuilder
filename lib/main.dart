@@ -8,6 +8,7 @@ import 'card_image.dart';
 import 'search_view.dart';
 import 'spoiler.dart';
 import 'catalog_job.dart';
+import 'sync.dart';
 import 'package:workmanager/workmanager.dart';
 
 void main() => runApp(const DeckBuilder());
@@ -40,6 +41,7 @@ class _LibraryState extends State<Library> {
   Timer? progressTimer;
   bool checking = false;
   String? lastUpdated;
+  bool lastOffline = false, lastComplete = false;
   @override
   void initState() {
     super.initState();
@@ -59,6 +61,8 @@ class _LibraryState extends State<Library> {
         busy = await Workmanager().isScheduledByUniqueName(catalogTask);
       }
       lastUpdated = library.updated;
+      lastOffline = library.useOfflineImages;
+      lastComplete = library.imagesComplete;
       if (!mounted) {
         db.close();
         return;
@@ -77,29 +81,18 @@ class _LibraryState extends State<Library> {
 
   Future<void> update() async {
     if (busy) return;
-    final confirmed = await showDialog<bool>(
+    final mode = await showDialog<InstallMode>(
       context: context,
-      builder: (ctx) => AlertDialog(
-        title: const Text('카드 데이터 다운로드'),
-        content: const Text(
-          '모바일 데이터와 저장 공간을 사용합니다. 다운로드가 중단되면 기존 DB와 스포일러 카드를 유지합니다. 계속할까요?',
-        ),
-        actions: [
-          TextButton(
-            onPressed: () => Navigator.pop(ctx, false),
-            child: const Text('취소'),
-          ),
-          FilledButton(
-            onPressed: () => Navigator.pop(ctx, true),
-            child: const Text('확인'),
-          ),
-        ],
+      builder: (_) => InstallDialog(
+        hasText: store!.updated != null,
+        hasImages: store!.imagesComplete,
+        offlineRequested: store!.useOfflineImages,
       ),
     );
-    if (!mounted || confirmed != true || busy) return;
+    if (!mounted || mode == null || busy) return;
     setState(() {
       busy = true;
-      status = '카드 목록 확인 중';
+      status = '설치 준비 중';
     });
     final catalog = store!;
     try {
@@ -108,21 +101,26 @@ class _LibraryState extends State<Library> {
         await Workmanager().registerOneOffTask(
           catalogTask,
           catalogTask,
-          inputData: {'path': path},
+          inputData: {'path': path, 'mode': mode.name},
+          foregroundServiceConfig: mode == InstallMode.full
+              ? ForegroundServiceConfig(
+                  notificationTitle: 'Grand Archive Utility',
+                  notificationText: '카드 이미지 설치 중',
+                )
+              : null,
           existingWorkPolicy: ExistingWorkPolicy.keep,
           constraints: Constraints(networkType: NetworkType.connected),
         );
         if (mounted) watchProgress();
       } else {
         watchProgress();
-        await downloadOnDesktop(path);
+        await downloadOnDesktop(path, mode);
         if (mounted) finishDownload();
       }
     } catch (e) {
       if (mounted) {
-        progressTimer?.cancel();
+        finishDownload();
         setState(() {
-          busy = false;
           status = '다운로드 중단 · $e';
         });
       }
@@ -134,7 +132,13 @@ class _LibraryState extends State<Library> {
     final catalog = store!;
     final updated = catalog.updated;
     setState(() {
-      if (updated != lastUpdated) revision++;
+      if (updated != lastUpdated ||
+          catalog.useOfflineImages != lastOffline ||
+          catalog.imagesComplete != lastComplete) {
+        revision++;
+      }
+      lastOffline = catalog.useOfflineImages;
+      lastComplete = catalog.imagesComplete;
       lastUpdated = updated;
       busy = false;
       status = catalog.metadata('downloadStatus') ?? '';
@@ -294,15 +298,14 @@ class _LibraryState extends State<Library> {
                             title: const Text('마지막 업데이트'),
                             subtitle: Text(library.updated ?? '설치 전'),
                           ),
-                          SwitchListTile(
-                            title: const Text('Wi-Fi로만 다운로드'),
-                            subtitle: const Text('카드 데이터베이스 갱신에 적용'),
-                            value: library.wifiOnly,
-                            onChanged: (v) => setState(
-                              () => library.setMetadata(
-                                'wifiOnly',
-                                v ? '1' : '0',
-                              ),
+                          ListTile(
+                            title: const Text('설치 상태'),
+                            subtitle: Text(
+                              library.updated == null
+                                  ? '설치 전'
+                                  : library.imagesComplete
+                                  ? '텍스트 + 이미지'
+                                  : '텍스트 설치됨 · 전체 이미지 추가 가능',
                             ),
                           ),
                           ListTile(
@@ -323,7 +326,7 @@ class _LibraryState extends State<Library> {
                           ),
                           syncAction,
                           ListTile(
-                            title: const Text('이미지 캐시 관리'),
+                            title: const Text('이전 버전 이미지 캐시 관리'),
                             onTap: manageCache,
                           ),
                         ],
@@ -348,4 +351,70 @@ class _LibraryState extends State<Library> {
             ),
     );
   }
+}
+
+class InstallDialog extends StatefulWidget {
+  final bool hasText, hasImages, offlineRequested;
+  const InstallDialog({
+    super.key,
+    required this.hasText,
+    required this.hasImages,
+    required this.offlineRequested,
+  });
+  @override
+  State<InstallDialog> createState() => _InstallDialogState();
+}
+
+class _InstallDialogState extends State<InstallDialog> {
+  late InstallMode mode = widget.offlineRequested
+      ? InstallMode.full
+      : InstallMode.text;
+  @override
+  Widget build(BuildContext context) => AlertDialog(
+    title: const Text('카드 데이터베이스 설치 방식'),
+    content: SingleChildScrollView(
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          RadioGroup<InstallMode>(
+            groupValue: mode,
+            onChanged: (v) => setState(() => mode = v!),
+            child: Column(
+              children: [
+                RadioListTile(
+                  value: InstallMode.text,
+                  title: const Text('텍스트만 설치'),
+                  subtitle: Text(
+                    widget.offlineRequested
+                        ? '설치한 공식 이미지를 삭제하고 열람할 때 API에서 불러옵니다.'
+                        : '카드 이미지는 열람할 때 공식 API에서 불러옵니다.',
+                  ),
+                ),
+                RadioListTile(
+                  value: InstallMode.full,
+                  title: const Text('텍스트 + 이미지 모두 설치'),
+                  subtitle: Text(
+                    widget.hasText && !widget.hasImages
+                        ? '설치된 텍스트는 유지하고 오프라인 이미지만 추가합니다.'
+                        : '카드 이미지까지 저장해 오프라인에서 열람합니다.',
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const Text('모바일 데이터와 기기 저장 공간을 사용합니다. 전체 이미지 설치에는 시간이 걸릴 수 있습니다.'),
+        ],
+      ),
+    ),
+    actions: [
+      TextButton(
+        onPressed: () => Navigator.pop(context),
+        child: const Text('취소'),
+      ),
+      FilledButton(
+        onPressed: () => Navigator.pop(context, mode),
+        child: const Text('확인'),
+      ),
+    ],
+  );
 }

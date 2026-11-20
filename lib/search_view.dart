@@ -24,6 +24,7 @@ class _SearchViewState extends State<SearchView> {
   Filters filters = Filters();
   final query = TextEditingController();
   late List<sql.Row> rows;
+  late bool useOfflineImages;
   late Map<String, List<String>> options;
   @override
   void initState() {
@@ -32,6 +33,7 @@ class _SearchViewState extends State<SearchView> {
   }
 
   void refresh() {
+    useOfflineImages = widget.catalog.useOfflineImages;
     options = widget.catalog.options();
     rows = widget.catalog.search(filters);
   }
@@ -291,8 +293,9 @@ class _SearchViewState extends State<SearchView> {
         ? EditionImage(
             path,
             print?['version']?.toString() ?? '',
+            useOffline: useOfflineImages,
             thumbnail: true,
-            key: ValueKey((path, print?['version'])),
+            key: ValueKey((path, print?['version'], widget.revision)),
           )
         : fallback;
     return Card(
@@ -351,6 +354,7 @@ class CardDetail extends StatelessWidget {
             EditionImage(
               path,
               e['last_update']?.toString() ?? '',
+              useOffline: catalog.useOfflineImages,
               key: ValueKey((path, e['last_update'])),
             ),
         ],
