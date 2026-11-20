@@ -9,11 +9,16 @@ import 'effect_text.dart';
 class SearchView extends StatefulWidget {
   final Catalog catalog;
   final int revision;
-  final VoidCallback onAdd;
+  final VoidCallback? onAdd;
+  final void Function(String card, String? edition)? onPick;
+  final Map<String, int> deckCounts;
+
   const SearchView(
     this.catalog, {
     required this.revision,
-    required this.onAdd,
+    this.onAdd,
+    this.onPick,
+    this.deckCounts = const {},
     super.key,
   });
   @override
@@ -204,11 +209,12 @@ class _SearchViewState extends State<SearchView> {
                           ),
                         ),
                       ),
-                    TextButton.icon(
-                      onPressed: widget.onAdd,
-                      icon: const Icon(Icons.add),
-                      label: const Text('스포일러 추가'),
-                    ),
+                    if (widget.onAdd != null)
+                      TextButton.icon(
+                        onPressed: widget.onAdd,
+                        icon: const Icon(Icons.add),
+                        label: const Text('스포일러 추가'),
+                      ),
                   ],
                 ),
                 Expanded(
@@ -218,9 +224,11 @@ class _SearchViewState extends State<SearchView> {
                       ? GridView.builder(
                           padding: const EdgeInsets.all(8),
                           gridDelegate:
-                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                              SliverGridDelegateWithMaxCrossAxisExtent(
                                 maxCrossAxisExtent: 170,
-                                mainAxisExtent: 210,
+                                mainAxisExtent: widget.onPick == null
+                                    ? 210
+                                    : 260,
                                 crossAxisSpacing: 8,
                                 mainAxisSpacing: 8,
                               ),
@@ -246,7 +254,11 @@ class _SearchViewState extends State<SearchView> {
     final spoiler = r['spoiler'] == 1;
     final subtitle = edition == null
         ? ''
-        : [r['set_code'], r['rarity']].nonNulls.join(' · ');
+        : [
+            r['set_code'],
+            if (r['number'] != null) '#${r['number']}',
+            r['rarity'],
+          ].nonNulls.join(' · ');
     Future<void> open() async {
       await Navigator.push(
         context,
@@ -257,11 +269,28 @@ class _SearchViewState extends State<SearchView> {
       if (mounted) setState(refresh);
     }
 
+    final pick = widget.onPick;
+    final add = pick == null
+        ? null
+        : IconButton(
+            tooltip: '$name 한 장 추가',
+            icon: const Icon(Icons.add_circle_outline),
+            onPressed: () => pick(id, edition),
+          );
+    final count = widget.deckCounts[id] ?? 0;
     if (!grid) {
       return ListTile(
         title: Text(name),
-        subtitle: subtitle.isEmpty ? null : Text(subtitle),
-        trailing: spoiler ? const Chip(label: Text('스포일러')) : null,
+        subtitle: pick == null
+            ? (subtitle.isEmpty ? null : Text(subtitle))
+            : Text(
+                [
+                  if (subtitle.isNotEmpty) subtitle,
+                  if (spoiler) '스포일러',
+                  '덱에 $count장',
+                ].join(' · '),
+              ),
+        trailing: add ?? (spoiler ? const Chip(label: Text('스포일러')) : null),
         onTap: open,
       );
     }
@@ -308,6 +337,14 @@ class _SearchViewState extends State<SearchView> {
               if (subtitle.isNotEmpty)
                 Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
               if (spoiler) const Text('스포일러'),
+              if (add != null)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    Flexible(child: Text('덱에 $count장')),
+                    add,
+                  ],
+                ),
             ],
           ),
         ),

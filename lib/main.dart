@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 import 'catalog.dart';
+import 'deck_editor.dart';
 import 'card_image.dart';
 import 'search_view.dart';
 import 'spoiler.dart';
@@ -34,7 +35,8 @@ class Library extends StatefulWidget {
 class _LibraryState extends State<Library> {
   Catalog? store;
   late String path;
-  int tab = 0, revision = 0;
+  int tab = 0;
+  final revision = ValueNotifier(0);
   bool busy = false;
   String status = '';
   Timer? progressTimer;
@@ -118,7 +120,7 @@ class _LibraryState extends State<Library> {
     final catalog = store!;
     final updated = catalog.updated;
     setState(() {
-      if (updated != lastUpdated) revision++;
+      if (updated != lastUpdated) revision.value++;
       lastUpdated = updated;
       busy = false;
       status = catalog.metadata('downloadStatus') ?? '';
@@ -158,7 +160,7 @@ class _LibraryState extends State<Library> {
       final result = await inspectCatalogFile(path);
       final damagedImages = await removeDamagedImages();
       if (!mounted) return;
-      setState(() => revision++);
+      setState(() => revision.value++);
       await showDialog<void>(
         context: context,
         builder: (ctx) => AlertDialog(
@@ -223,6 +225,7 @@ class _LibraryState extends State<Library> {
   @override
   void dispose() {
     progressTimer?.cancel();
+    revision.dispose();
     store?.db.close();
     super.dispose();
   }
@@ -245,8 +248,13 @@ class _LibraryState extends State<Library> {
         ),
       );
     }
-    const names = ['홈', '카드 검색', '설정'];
-    const icons = [Icons.home_outlined, Icons.search, Icons.settings_outlined];
+    const names = ['홈', '카드 검색', '덱', '설정'];
+    const icons = [
+      Icons.home_outlined,
+      Icons.search,
+      Icons.style_outlined,
+      Icons.settings_outlined,
+    ];
     final wide = MediaQuery.sizeOf(context).width >= 600;
     final syncAction = FilledButton.icon(
       onPressed: busy ? null : update,
@@ -263,7 +271,7 @@ class _LibraryState extends State<Library> {
               labelType: NavigationRailLabelType.all,
               onDestinationSelected: (v) => setState(() => tab = v),
               destinations: [
-                for (var i = 0; i < 3; i++)
+                for (var i = 0; i < names.length; i++)
                   NavigationRailDestination(
                     icon: Icon(icons[i]),
                     label: Text(names[i]),
@@ -301,7 +309,7 @@ class _LibraryState extends State<Library> {
                       ),
                       SearchView(
                         library,
-                        revision: revision,
+                        revision: revision.value,
                         onAdd: () async {
                           final saved = await Navigator.push<bool>(
                             context,
@@ -310,9 +318,14 @@ class _LibraryState extends State<Library> {
                             ),
                           );
                           if (saved == true && mounted) {
-                            setState(() => revision++);
+                            setState(() => revision.value++);
                           }
                         },
+                      ),
+                      DeckList(
+                        library,
+                        catalogRevision: revision,
+                        onCatalogChange: () => setState(() => revision.value++),
                       ),
                       ListView(
                         padding: const EdgeInsets.all(20),
@@ -371,7 +384,9 @@ class _LibraryState extends State<Library> {
                                           ),
                                         ),
                                       );
-                                      if (mounted) setState(() => revision++);
+                                      if (mounted) {
+                                        setState(() => revision.value++);
+                                      }
                                     },
                             ),
                           ListTile(
@@ -394,7 +409,7 @@ class _LibraryState extends State<Library> {
               selectedIndex: tab,
               onDestinationSelected: (v) => setState(() => tab = v),
               destinations: [
-                for (var i = 0; i < 3; i++)
+                for (var i = 0; i < names.length; i++)
                   NavigationDestination(icon: Icon(icons[i]), label: names[i]),
               ],
             ),
