@@ -47,8 +47,9 @@ TextSpan effectSpan(Json card) {
     }
   }
 
-  if (markup != null && markup.isNotEmpty)
+  if (markup != null && markup.isNotEmpty) {
     visit(html.parseFragment(markup), false);
+  }
   if (spans.isEmpty) {
     final markdown = card['effect'] as String? ?? '';
     cursor = 0;
