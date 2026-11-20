@@ -24,7 +24,7 @@ void main() {
         edition('p1', 'A', '001', 1),
         edition('p2', 'B', '002', 2),
       ];
-      initial.insert(card('one', 'Twin', prints: prints));
+      initial.insert(card('one', 'Twin', cost: 'reserve', prints: prints));
       initial.insert(card('two', 'Twin'));
       final id = initial.createDeck('Draft');
       for (var n = 0; n < 3; n++) {
@@ -56,7 +56,7 @@ void main() {
                     'page': 1,
                     'total_pages': 1,
                     'data': [
-                      card('one', 'Twin', prints: prints),
+                      card('one', 'Twin', cost: 'reserve', prints: prints),
                       card('two', 'Twin'),
                     ],
                   },
@@ -91,12 +91,24 @@ void main() {
       addTearDown(c.db.close);
       final id = c.createDeck('Preview');
       c.insert(
-        card('local', 'Known', prints: [edition('local-p', 'SET', '07', 1)]),
+        card(
+          'local',
+          'Known',
+          cost: 'reserve',
+          prints: [edition('local-p', 'SET', '07', 1)],
+        ),
         spoiler: true,
       );
       c.addToDeck(id, DeckZone.main, 'local', null);
       c.addToDeck(id, DeckZone.sideboard, 'local', null);
-      c.insert(card('known', 'Known', prints: [edition('kp', 'SET', '07', 1)]));
+      c.insert(
+        card(
+          'known',
+          'Known',
+          cost: 'reserve',
+          prints: [edition('kp', 'SET', '07', 1)],
+        ),
+      );
       c.addToDeck(id, DeckZone.main, 'known', 'kp');
       c.insert(card('pending', 'Twins'), spoiler: true);
       c.addToDeck(id, DeckZone.material, 'pending', null);
@@ -123,6 +135,60 @@ void main() {
     },
   );
 
+  test('name limits span identities, printings and both eligible zones', () {
+    final c = Catalog(sqlite3.openInMemory());
+    addTearDown(c.db.close);
+    final deck = c.createDeck('Rules');
+    c.insert(
+      card(
+        'a',
+        'Round',
+        cost: 'reserve',
+        prints: [edition('aa', 'A', '1', 1), edition('ab', 'B', '2', 1)],
+      ),
+    );
+    c.insert(card('b', ' ROUND ', cost: 'reserve'), spoiler: true);
+    c.insert(card('m', 'Round'));
+    c.insert(card('m2', 'ROUND'));
+    c.insert(card('n', 'Other', cost: 'none'));
+    void add(String id, DeckZone zone, [String? print]) =>
+        c.addToDeck(deck, zone, id, print);
+    const main = DeckZone.main,
+        material = DeckZone.material,
+        side = DeckZone.sideboard;
+    add('a', main, 'aa');
+    add('a', main, 'ab');
+    add('b', side);
+    add('b', side);
+    add('m', side);
+    add('n', side);
+    DeckEntry entry(String id, DeckZone zone) =>
+        c.deckEntries(deck).firstWhere((e) => e.card == id && e.zone == zone);
+    expect(() => add('b', main), throwsStateError);
+    expect(() => c.incrementEntry(entry('a', main)), throwsStateError);
+    expect(() => add('m2', material), throwsStateError);
+    expect(() => add('a', material), throwsStateError);
+    expect(() => add('m', main), throwsStateError);
+    expect(
+      () => c.takeCopies(entry('b', side), 2, to: material),
+      throwsStateError,
+    );
+    expect(entry('b', side).quantity, 2);
+    c.takeCopies(entry('m', side), 1, to: material);
+    c.takeCopies(entry('b', side), 1, to: main);
+    c.takeCopies(entry('b', side), 1);
+    add('a', side, 'ab');
+    final counts = countCopies(c.deckEntries(deck));
+    expect(
+      counts[(DeckCost.reserve, 'round')]!.label(DeckCost.reserve),
+      'Main에 3장, Side에 1장',
+    );
+    expect(
+      counts[(DeckCost.memory, 'round')]!.label(DeckCost.memory),
+      'Material에 1장, Side에 0장',
+    );
+  });
+
   testWidgets(
     'thumbnail picker adds the chosen printing and keeps its filters',
     (tester) async {
@@ -136,6 +202,7 @@ void main() {
         card(
           'one',
           'Twin',
+          cost: 'reserve',
           prints: [edition('p1', 'A', '001', 1), edition('p2', 'B', '002', 2)],
         ),
       );
@@ -179,6 +246,83 @@ void main() {
     },
   );
 
+  testWidgets(
+    'zone switches preserve search and enforce cost and limits in both layouts',
+    (tester) async {
+      tester.view.devicePixelRatio = 1;
+      tester.view.physicalSize = const Size(1600, 1500);
+      addTearDown(tester.view.reset);
+      final c = Catalog(sqlite3.openInMemory());
+      addTearDown(c.db.close);
+      final id = c.createDeck('Zones');
+      c.insert(card('a', 'Red Reserve', cost: 'reserve'));
+      c.insert(card('b', 'Red Memory'));
+      c.insert(card('c', 'Blue Reserve', cost: 'reserve'));
+      c.addToDeck(id, DeckZone.sideboard, 'a', null);
+      c.addToDeck(id, DeckZone.sideboard, 'b', null);
+      Future<void> pumpEditor(int revision) async {
+        await tester.pumpWidget(
+          MaterialApp(
+            home: DeckEditor(
+              c,
+              (id: id, name: 'Zones'),
+              revision: revision,
+              onCatalogChange: () {},
+            ),
+          ),
+        );
+        await tester.pumpAndSettle();
+      }
+
+      Future<void> pickZone(String zone) async {
+        await tester.tap(find.byKey(ValueKey('add-$zone')));
+        await tester.pumpAndSettle();
+      }
+
+      Finder button(String tip) =>
+          find.byWidgetPredicate((w) => w is IconButton && w.tooltip == tip);
+      bool canAdd(String name) =>
+          tester.widget<IconButton>(button('$name 한 장 추가')).onPressed != null;
+      await pumpEditor(0);
+      expect(find.text('Sideboard · 4점'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, '1점'), findsOneWidget);
+      await tester.enterText(
+        find.widgetWithText(TextField, '카드명 · 효과 · 키워드'),
+        'Red',
+      );
+      await tester.pumpAndSettle();
+      expect(canAdd('Red Reserve'), isTrue);
+      expect(find.byTooltip('Red Memory 한 장 추가'), findsNothing);
+      expect(find.text('비용 종류'), findsNothing);
+      await pickZone('material');
+      expect(find.byTooltip('Red Reserve 한 장 추가'), findsNothing);
+      expect(canAdd('Red Memory'), isFalse);
+      expect(find.text('Material에 0장, Side에 1장'), findsOneWidget);
+      bool sidePlusEnabled() =>
+          tester
+              .widget<IconButton>(
+                find.descendant(
+                  of: find.widgetWithText(ListTile, '1점'),
+                  matching: button('한 장 더하기'),
+                ),
+              )
+              .onPressed !=
+          null;
+      expect(sidePlusEnabled(), isFalse);
+      expect(find.text('비용 종류'), findsNothing);
+      await pickZone('sideboard');
+      expect(find.text('비용 종류'), findsOneWidget);
+      expect(canAdd('Red Reserve'), isTrue);
+      expect(canAdd('Red Memory'), isFalse);
+      expect(find.byTooltip('Blue Reserve 한 장 추가'), findsNothing);
+      c.setMetadata('thumbnailGrid', '1');
+      await pumpEditor(1);
+      expect(find.widgetWithText(Card, '3점'), findsOneWidget);
+      expect(find.widgetWithText(Card, '1점'), findsOneWidget);
+      expect(find.text('Main에 0장, Side에 1장'), findsOneWidget);
+    },
+  );
+
   for (final wide in [false, true]) {
     testWidgets(
       'create, search, edit and move on ${wide ? 'desktop' : 'phone'}',
@@ -191,7 +335,12 @@ void main() {
         final revision = ValueNotifier(0);
         addTearDown(revision.dispose);
         catalog.insert(
-          card('a', 'Amber', prints: [edition('p', 'Set', '002', 1)]),
+          card(
+            'a',
+            'Amber',
+            cost: 'reserve',
+            prints: [edition('p', 'Set', '002', 1)],
+          ),
         );
         await tester.pumpWidget(
           MaterialApp(
@@ -218,7 +367,7 @@ void main() {
           await tester.tap(find.byTooltip('Amber 한 장 추가'));
           await tester.pumpAndSettle();
         }
-        expect(find.textContaining('덱에 3장'), findsOneWidget);
+        expect(find.textContaining('Main에 3장, Side에 0장'), findsOneWidget);
         expect(find.text('Amb'), findsOneWidget);
         if (!wide) {
           await tester.tap(find.byTooltip('덱으로'));
@@ -232,10 +381,10 @@ void main() {
         await tester.tap(find.text('이동'));
         await tester.pumpAndSettle();
         expect(find.text('Main Deck · 2장'), findsOneWidget);
-        expect(find.text('Sideboard · 1장'), findsOneWidget);
+        expect(find.text('Sideboard · 3점'), findsOneWidget);
         await tester.tap(find.byTooltip('한 장 빼기').last);
         await tester.pumpAndSettle();
-        expect(find.text('Sideboard · 0장'), findsOneWidget);
+        expect(find.text('Sideboard · 0점'), findsOneWidget);
         expect(
           catalog.deckEntries(catalog.decks().single.id).single.quantity,
           2,

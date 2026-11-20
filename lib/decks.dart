@@ -9,6 +9,54 @@ enum DeckZone {
   const DeckZone(this.label);
 }
 
+enum DeckCost {
+  reserve(DeckZone.main, 'Main', 4, 3),
+  memory(DeckZone.material, 'Material', 1, 1),
+  other(null, '', null, 0);
+
+  final DeckZone? primary;
+  final String label;
+  final int? limit;
+  final int points;
+  const DeckCost(this.primary, this.label, this.limit, this.points);
+
+  static DeckCost parse(Object? value) => switch (value) {
+    'reserve' => reserve,
+    'memory' => memory,
+    _ => other,
+  };
+
+  bool accepts(DeckZone zone) => zone == primary || zone == DeckZone.sideboard;
+}
+
+typedef DeckCounts = Map<(DeckCost, String), ZoneCopies>;
+
+class ZoneCopies {
+  final int primary, side;
+  const ZoneCopies([this.primary = 0, this.side = 0]);
+
+  String label(DeckCost cost) => [
+    if (cost.primary != null) '${cost.label}에 $primary장',
+    'Side에 $side장',
+  ].join(', ');
+
+  bool allows(DeckCost cost, int extra) =>
+      extra == 0 || cost.limit == null || primary + side + extra <= cost.limit!;
+}
+
+DeckCounts countCopies(Iterable<DeckEntry> entries) {
+  final counts = <(DeckCost, String), ZoneCopies>{};
+  for (final e in entries) {
+    if (!e.cost.accepts(e.zone)) continue;
+    final key = (e.cost, normalizedName(e.name));
+    final current = counts[key] ?? const ZoneCopies();
+    counts[key] = e.zone == DeckZone.sideboard
+        ? ZoneCopies(current.primary, current.side + e.quantity)
+        : ZoneCopies(current.primary + e.quantity, current.side);
+  }
+  return counts;
+}
+
 typedef DeckInfo = ({int id, String name});
 typedef DeckEntry = ({
   int deck,
@@ -16,6 +64,8 @@ typedef DeckEntry = ({
   String card,
   String edition,
   int quantity,
+  DeckCost cost,
+  bool spoiler,
   String name,
   String printing,
   String? status,
@@ -56,6 +106,7 @@ extension DeckStorage on Catalog {
     final rows = db.select(
       '''
       SELECT d.*,COALESCE(c.name,s.name,d.card) name,COALESCE(s.spoiler,0) spoiler,
+        json_extract(COALESCE(c.payload,s.payload),'\$.cost.type') cost_type,
         COALESCE(c.active,s.active,0) active,COALESCE(e.id,se.id) current_print,
         COALESCE(e.set_code,se.set_code,json_extract(r.payload,'\$.set.prefix')) set_code,
         COALESCE(e.number,se.number,json_extract(r.payload,'\$.collector_number')) number
@@ -77,6 +128,8 @@ extension DeckStorage on Catalog {
           card: r['card'] as String,
           edition: r['edition'] as String,
           quantity: r['quantity'] as int,
+          cost: DeckCost.parse(r['cost_type']),
+          spoiler: r['spoiler'] == 1,
           name: r['name'] as String,
           printing: [
             r['set_code'],
@@ -107,13 +160,41 @@ extension DeckStorage on Catalog {
     );
   }
 
+  void _checkDeckRule(
+    int deck,
+    String card,
+    DeckZone zone,
+    int count, {
+    DeckZone? from,
+    bool activeOnly = false,
+  }) {
+    final row = db
+        .select(
+          """SELECT name,active,json_extract(payload,'\$.cost.type') cost_type
+         FROM library_cards WHERE id=?""",
+          [card],
+        )
+        .firstOrNull;
+    if (row == null || (activeOnly && row['active'] != 1)) {
+      throw StateError('카드 정보가 변경되었습니다. 검색 결과를 다시 확인하세요.');
+    }
+    final cost = DeckCost.parse(row['cost_type']);
+    if (!cost.accepts(zone)) {
+      throw StateError('이 비용 종류는 ${zone.label}에 넣을 수 없습니다.');
+    }
+    if (from != null && cost.accepts(from)) return;
+    final key = (cost, normalizedName(row['name'] as String));
+    final copies = countCopies(deckEntries(deck))[key] ?? const ZoneCopies();
+    if (!copies.allows(cost, count)) {
+      throw StateError(
+        '동명 카드는 ${cost.label}과 Side 합계 ${cost.limit}장까지 넣을 수 있습니다.',
+      );
+    }
+  }
+
   void addToDeck(int deck, DeckZone zone, String card, String? edition) {
     transaction(() {
-      if (db.select('SELECT 1 FROM library_cards WHERE id=? AND active=1', [
-        card,
-      ]).isEmpty) {
-        throw StateError('카드 정보가 변경되었습니다. 검색 결과를 다시 확인하세요.');
-      }
+      _checkDeckRule(deck, card, zone, 1, activeOnly: true);
       final prints = db.select(
         '''SELECT id FROM library_editions WHERE card=?
         AND (? IS NULL OR id=?) ORDER BY position,id LIMIT 1''',
@@ -127,11 +208,15 @@ extension DeckStorage on Catalog {
   }
 
   void incrementEntry(DeckEntry e) {
-    db.execute(
-      '''UPDATE deck_entries SET quantity=quantity+1
+    transaction(() {
+      _checkDeckRule(e.deck, e.card, e.zone, 1);
+      db.execute(
+        '''UPDATE deck_entries SET quantity=quantity+1
       WHERE deck=? AND zone=? AND card=? AND edition=?''',
-      [e.deck, e.zone.name, e.card, e.edition],
-    );
+        [e.deck, e.zone.name, e.card, e.edition],
+      );
+      if (db.updatedRows == 0) throw StateError('항목이 변경되었습니다.');
+    });
   }
 
   // Moving across zones and removing the last copy both commit atomically.
@@ -146,6 +231,7 @@ extension DeckStorage on Catalog {
       if (row == null || (row['quantity'] as int) < count) {
         throw StateError('항목이 변경되었습니다.');
       }
+      if (to != null) _checkDeckRule(e.deck, e.card, to, count, from: e.zone);
       if (row['quantity'] == count) {
         db.execute('DELETE FROM deck_entries $where', key);
       } else {

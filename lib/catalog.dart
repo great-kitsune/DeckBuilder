@@ -203,7 +203,7 @@ class Catalog {
     return result;
   }
 
-  List<Row> search(Filters f) {
+  List<Row> search(Filters f, {DeckCost? requiredCost}) {
     final args = <Object?>[];
     final clauses = ['c.active=1'];
     if (f.text.trim().isNotEmpty) {
@@ -216,9 +216,10 @@ class Catalog {
     }
     final cost = "json_extract(c.payload,'\$.cost.value')";
     final level = "json_extract(c.payload,'\$.level')";
-    if (f.costType.isNotEmpty) {
+    final costType = requiredCost?.name ?? f.costType;
+    if (costType.isNotEmpty) {
       clauses.add("json_extract(c.payload,'\$.cost.type')=?");
-      args.add(f.costType);
+      args.add(costType);
     }
     if (f.minCost != null || f.maxCost != null) {
       clauses.add(
@@ -275,7 +276,7 @@ class Catalog {
       }
     }
     return db.select(
-      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.number,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
+      'SELECT c.id,c.name,c.spoiler,json_extract(c.payload,\'\$.cost.type\') cost_type,${f.editions ? 'e.id AS edition,e.set_code,e.number,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
       args,
     );
   }

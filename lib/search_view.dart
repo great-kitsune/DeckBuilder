@@ -11,7 +11,8 @@ class SearchView extends StatefulWidget {
   final int revision;
   final VoidCallback? onAdd, onCatalogChange;
   final void Function(String card, String? edition)? onPick;
-  final Map<String, int> deckCounts;
+  final DeckCounts deckCounts;
+  final DeckCost? requiredCost;
 
   const SearchView(
     this.catalog, {
@@ -19,6 +20,7 @@ class SearchView extends StatefulWidget {
     this.onAdd,
     this.onCatalogChange,
     this.onPick,
+    this.requiredCost,
     this.deckCounts = const {},
     super.key,
   });
@@ -39,14 +41,22 @@ class _SearchViewState extends State<SearchView> {
 
   void refresh() {
     options = widget.catalog.options();
-    rows = widget.catalog.search(filters);
+    rows = widget.catalog.search(filters, requiredCost: widget.requiredCost);
   }
 
-  void search() => setState(() => rows = widget.catalog.search(filters));
+  void search() => setState(
+    () => rows = widget.catalog.search(
+      filters,
+      requiredCost: widget.requiredCost,
+    ),
+  );
   @override
   void didUpdateWidget(SearchView old) {
     super.didUpdateWidget(old);
-    if (widget.revision != old.revision) refresh();
+    if (widget.revision != old.revision ||
+        widget.requiredCost != old.requiredCost) {
+      refresh();
+    }
   }
 
   @override
@@ -121,16 +131,17 @@ class _SearchViewState extends State<SearchView> {
               ),
             ],
           ),
-        DropdownButtonFormField(
-          key: ObjectKey(filters),
-          initialValue: filters.costType,
-          decoration: const InputDecoration(labelText: '비용 종류'),
-          items: [
-            for (final v in ['', 'memory', 'reserve', 'none'])
-              DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
-          ],
-          onChanged: (v) => change(() => filters.costType = v!),
-        ),
+        if (widget.requiredCost == null)
+          DropdownButtonFormField(
+            key: ObjectKey(filters),
+            initialValue: filters.costType,
+            decoration: const InputDecoration(labelText: '비용 종류'),
+            items: [
+              for (final v in ['', 'memory', 'reserve', 'none'])
+                DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
+            ],
+            onChanged: (v) => change(() => filters.costType = v!),
+          ),
         for (final (label, value, assign)
             in <(String, int?, void Function(int?))>[
               ('최소 비용', filters.minCost, (v) => filters.minCost = v),
@@ -273,14 +284,16 @@ class _SearchViewState extends State<SearchView> {
     }
 
     final pick = widget.onPick;
+    final cost = DeckCost.parse(r['cost_type']);
+    final copies =
+        widget.deckCounts[(cost, normalizedName(name))] ?? const ZoneCopies();
     final add = pick == null
         ? null
         : IconButton(
             tooltip: '$name 한 장 추가',
             icon: const Icon(Icons.add_circle_outline),
-            onPressed: () => pick(id, edition),
+            onPressed: copies.allows(cost, 1) ? () => pick(id, edition) : null,
           );
-    final count = widget.deckCounts[id] ?? 0;
     if (!grid) {
       return ListTile(
         title: Text(name),
@@ -290,43 +303,13 @@ class _SearchViewState extends State<SearchView> {
                 [
                   if (subtitle.isNotEmpty) subtitle,
                   if (spoiler) '스포일러',
-                  '덱에 $count장',
+                  copies.label(cost),
                 ].join(' · '),
               ),
         trailing: add ?? (spoiler ? const Chip(label: Text('스포일러')) : null),
         onTap: open,
       );
     }
-    final catalog = widget.catalog;
-    final local = spoiler
-        ? (catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
-                id,
-              ]).firstOrNull?['photo']
-              as Uint8List?)
-        : null;
-    final print = catalog.db
-        .select(
-          """SELECT json_extract(payload,'\$.image') image,
-      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
-          [id, edition, edition],
-        )
-        .firstOrNull;
-    final path = print?['image'] as String?;
-    const fallback = Icon(Icons.image_outlined);
-    final image = local != null
-        ? Image.memory(
-            local,
-            cacheWidth: 260,
-            errorBuilder: (_, _, _) => fallback,
-          )
-        : path != null && path.startsWith('/cards/images/')
-        ? EditionImage(
-            path,
-            print?['version']?.toString() ?? '',
-            thumbnail: true,
-            key: ValueKey((path, print?['version'], widget.revision)),
-          )
-        : fallback;
     return Card(
       clipBehavior: Clip.antiAlias,
       child: InkWell(
@@ -335,7 +318,17 @@ class _SearchViewState extends State<SearchView> {
           padding: const EdgeInsets.all(6),
           child: Column(
             children: [
-              Expanded(child: Center(child: image)),
+              Expanded(
+                child: Center(
+                  child: CatalogThumbnail(
+                    widget.catalog,
+                    id,
+                    edition,
+                    spoiler: spoiler,
+                    revision: widget.revision,
+                  ),
+                ),
+              ),
               Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
               if (subtitle.isNotEmpty)
                 Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
@@ -344,7 +337,7 @@ class _SearchViewState extends State<SearchView> {
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
                   children: [
-                    Flexible(child: Text('덱에 $count장')),
+                    Flexible(child: Text(copies.label(cost))),
                     add,
                   ],
                 ),

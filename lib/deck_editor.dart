@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'catalog.dart';
+import 'card_image.dart';
 import 'search_view.dart';
 
 Future<String?> _deckName(
@@ -264,90 +265,167 @@ class _DeckEditorState extends State<DeckEditor> {
     setState(() => picking = false);
   }
 
-  Widget contents(List<DeckEntry> entries, bool wide) => ListView(
-    padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
-    children: [
-      for (final group in DeckZone.values) ...[
-        Padding(
-          padding: const EdgeInsets.only(top: 12),
-          child: Row(
+  String amount(DeckZone zone, int quantity, int points) =>
+      zone == DeckZone.sideboard ? '$points점' : '$quantity장';
+
+  Widget entryTile(DeckEntry e, DeckCounts counts, bool grid) {
+    final copies =
+        counts[(e.cost, normalizedName(e.name))] ?? const ZoneCopies();
+    final moves = DeckZone.values.where(
+      (z) => z != e.zone && e.cost.accepts(z),
+    );
+    final controls = Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        IconButton(
+          tooltip: '한 장 빼기',
+          icon: const Icon(Icons.remove),
+          onPressed: () => change(() => widget.catalog.takeCopies(e, 1)),
+        ),
+        Text(amount(e.zone, e.quantity, e.quantity * e.cost.points)),
+        IconButton(
+          tooltip: '한 장 더하기',
+          icon: const Icon(Icons.add),
+          onPressed: e.cost.accepts(e.zone) && copies.allows(e.cost, 1)
+              ? () => change(() => widget.catalog.incrementEntry(e))
+              : null,
+        ),
+        PopupMenuButton<DeckZone>(
+          tooltip: '구역 이동',
+          enabled: moves.isNotEmpty,
+          onSelected: (z) => move(e, z),
+          itemBuilder: (_) => [
+            for (final z in moves)
+              PopupMenuItem(value: z, child: Text('${z.label}로 이동')),
+          ],
+        ),
+      ],
+    );
+    final note = [
+      if (e.printing.isNotEmpty)
+        e.printing
+      else if (e.edition.isNotEmpty)
+        e.edition,
+      ?e.status,
+    ].join(' · ');
+    if (!grid) {
+      return ListTile(
+        contentPadding: EdgeInsets.zero,
+        title: Text(e.name),
+        subtitle: note.isEmpty ? null : Text(note),
+        trailing: controls,
+        onTap: () => detail(e),
+      );
+    }
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: () => detail(e),
+        child: Padding(
+          padding: const EdgeInsets.all(4),
+          child: Column(
             children: [
               Expanded(
-                child: Text(
-                  '${group.label} · ${entries.where((e) => e.zone == group).fold(0, (n, e) => n + e.quantity)}장',
-                  style: Theme.of(context).textTheme.titleMedium,
+                child: CatalogThumbnail(
+                  widget.catalog,
+                  e.card,
+                  e.edition.isEmpty ? null : e.edition,
+                  spoiler: e.spoiler,
+                  revision: widget.revision,
                 ),
               ),
-              TextButton.icon(
-                icon: const Icon(Icons.add),
-                label: const Text('카드 추가'),
-                key: ValueKey('add-${group.name}'),
-                onPressed: () => setState(() {
-                  zone = group;
-                  openedSearch = true;
-                  picking = !wide;
-                }),
-              ),
+              Text(e.name, maxLines: 2, overflow: TextOverflow.ellipsis),
+              if (note.isNotEmpty)
+                Text(note, maxLines: 1, overflow: TextOverflow.ellipsis),
+              FittedBox(fit: BoxFit.scaleDown, child: controls),
             ],
           ),
         ),
-        const Divider(height: 1),
-        for (final e in entries.where((e) => e.zone == group))
-          ListTile(
-            contentPadding: EdgeInsets.zero,
-            title: Text(e.name),
-            subtitle:
-                e.printing.isEmpty && e.edition.isEmpty && e.status == null
-                ? null
-                : Text(
-                    [
-                      if (e.printing.isNotEmpty)
-                        e.printing
-                      else if (e.edition.isNotEmpty)
-                        e.edition,
-                      ?e.status,
-                    ].join(' · '),
+      ),
+    );
+  }
+
+  Widget contents(List<DeckEntry> entries, DeckCounts counts, bool wide) {
+    final grid = widget.catalog.thumbnailGrid;
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final columns = ((constraints.maxWidth - 24) / 170).floor().clamp(
+          1,
+          16,
+        );
+        final slivers = <Widget>[];
+        for (final group in DeckZone.values) {
+          final cards = entries.where((e) => e.zone == group).toList();
+          final total = cards.fold(0, (n, e) => n + e.quantity);
+          final points = cards.fold(
+            0,
+            (n, e) => n + e.quantity * e.cost.points,
+          );
+          slivers.add(
+            SliverToBoxAdapter(
+              child: Column(
+                children: [
+                  Padding(
+                    padding: const EdgeInsets.only(top: 12),
+                    child: Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            '${group.label} · ${amount(group, total, points)}',
+                            style: Theme.of(context).textTheme.titleMedium,
+                          ),
+                        ),
+                        TextButton.icon(
+                          icon: const Icon(Icons.add),
+                          label: const Text('카드 추가'),
+                          key: ValueKey('add-${group.name}'),
+                          onPressed: () => setState(() {
+                            zone = group;
+                            openedSearch = true;
+                            picking = !wide;
+                          }),
+                        ),
+                      ],
+                    ),
                   ),
-            onTap: () => detail(e),
-            trailing: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                IconButton(
-                  tooltip: '한 장 빼기',
-                  icon: const Icon(Icons.remove),
-                  onPressed: () =>
-                      change(() => widget.catalog.takeCopies(e, 1)),
-                ),
-                Text('${e.quantity}'),
-                IconButton(
-                  tooltip: '한 장 더하기',
-                  icon: const Icon(Icons.add),
-                  onPressed: () =>
-                      change(() => widget.catalog.incrementEntry(e)),
-                ),
-                PopupMenuButton<DeckZone>(
-                  tooltip: '구역 이동',
-                  onSelected: (z) => move(e, z),
-                  itemBuilder: (_) => [
-                    for (final z in DeckZone.values.where((z) => z != e.zone))
-                      PopupMenuItem(value: z, child: Text('${z.label}로 이동')),
-                  ],
-                ),
-              ],
+                  const Divider(height: 1),
+                ],
+              ),
             ),
-          ),
-      ],
-    ],
-  );
+          );
+          final delegate = SliverChildBuilderDelegate(
+            (_, i) => entryTile(cards[i], counts, grid),
+            childCount: cards.length,
+          );
+          slivers.add(
+            grid
+                ? SliverGrid(
+                    gridDelegate: SliverGridDelegateWithFixedCrossAxisCount(
+                      crossAxisCount: columns,
+                      mainAxisExtent: 235,
+                    ),
+                    delegate: delegate,
+                  )
+                : SliverList(delegate: delegate),
+          );
+        }
+        return CustomScrollView(
+          slivers: [
+            SliverPadding(
+              padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+              sliver: SliverMainAxisGroup(slivers: slivers),
+            ),
+          ],
+        );
+      },
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
     final wide = MediaQuery.sizeOf(context).width >= 840;
     final entries = widget.catalog.deckEntries(widget.deck.id);
-    final counts = <String, int>{};
-    for (final e in entries) {
-      counts.update(e.card, (n) => n + e.quantity, ifAbsent: () => e.quantity);
-    }
+    final counts = countCopies(entries);
     final search = Column(
       children: [
         DropdownButton<DeckZone>(
@@ -363,6 +441,9 @@ class _DeckEditorState extends State<DeckEditor> {
             widget.catalog,
             revision: widget.revision,
             deckCounts: counts,
+            requiredCost: DeckCost.values
+                .where((cost) => cost.primary == zone)
+                .firstOrNull,
             onCatalogChange: widget.onCatalogChange,
             onPick: (card, edition) => change(
               () =>
@@ -398,13 +479,13 @@ class _DeckEditorState extends State<DeckEditor> {
                   children: [
                     Expanded(child: search),
                     const VerticalDivider(width: 1),
-                    Expanded(child: contents(entries, true)),
+                    Expanded(child: contents(entries, counts, true)),
                   ],
                 )
               : IndexedStack(
                   index: showPicker ? 1 : 0,
                   children: [
-                    contents(entries, false),
+                    contents(entries, counts, false),
                     if (openedSearch) search else const SizedBox.shrink(),
                   ],
                 ),

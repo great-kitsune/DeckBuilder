@@ -121,14 +121,19 @@ void main() {
     'search detail confirms deletion and refreshes the catalog and affected decks',
     (tester) async {
       db.insert(
-        card('local', 'Preview', prints: [edition('pe', 'SET', '001', 1)]),
+        card(
+          'local',
+          'Preview',
+          cost: 'reserve',
+          prints: [edition('pe', 'SET', '001', 1)],
+        ),
         spoiler: true,
       );
       db.insert(card('official', 'Released'));
       final deck = db.createDeck('Deck');
       db.addToDeck(deck, DeckZone.main, 'local', null);
       db.addToDeck(deck, DeckZone.sideboard, 'local', null);
-      db.addToDeck(deck, DeckZone.main, 'official', null);
+      db.addToDeck(deck, DeckZone.material, 'official', null);
       var changes = 0;
       await tester.pumpWidget(
         MaterialApp(
@@ -186,7 +191,7 @@ void main() {
     db.insert(card('a', 'Official'));
     final usage = db.spoilerUsage('local');
     final deck = db.createDeck('D');
-    db.addToDeck(deck, DeckZone.main, 'local', null);
+    db.addToDeck(deck, DeckZone.material, 'local', null);
     expect(
       () => db.deleteSpoiler('local', confirmedUsage: usage),
       throwsStateError,
