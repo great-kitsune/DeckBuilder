@@ -4,10 +4,7 @@ import 'dart:io';
 import 'package:http/http.dart' as http;
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog.dart';
-import 'offline_images.dart';
 import 'api_request.dart';
-
-enum InstallMode { text, full }
 
 class OfficialApi {
   final http.Client client;
@@ -56,15 +53,15 @@ Future<void> collect(
     }
   }
 
+  Future<dynamic> pageData(int page) => api.read('/cards/search', {
+    'page': '$page',
+    'page_size': '50',
+    'sort': 'name',
+  });
   int? totalPages;
+  var nextPage = pageData(1);
   for (var page = 1; ; page++) {
-    final result =
-        await api.read('/cards/search', {
-              'page': '$page',
-              'page_size': '50',
-              'sort': 'name',
-            })
-            as Json;
+    final result = await nextPage as Json;
     totalPages ??= result['total_pages'] as int;
     final rows = result['data'] as List;
     if (result['page'] != page ||
@@ -72,6 +69,11 @@ Future<void> collect(
         totalPages < page ||
         rows.isEmpty) {
       throw const FormatException('카드 페이지가 누락되거나 수집 중 변경되었습니다.');
+    }
+    if (page < totalPages) {
+      nextPage = pageData(page + 1);
+      // The current page may fail validation before the next await.
+      nextPage.ignore();
     }
     stage.transaction(() {
       for (final c in rows.cast<Json>()) {
@@ -110,7 +112,6 @@ Future<void> collect(
 Future<void> updateCatalog(
   String path,
   void Function(String) report, {
-  InstallMode mode = InstallMode.text,
   http.Client? client,
 }) async {
   final lock = await File('$path.sync-lock').open(mode: FileMode.append);
@@ -119,38 +120,23 @@ Future<void> updateCatalog(
     await lock.lock(FileLock.exclusive);
     final catalog = Catalog(sqlite3.open(path));
     try {
-      final addImagesOnly =
-          mode == InstallMode.full &&
-          catalog.updated != null &&
-          !catalog.imagesComplete;
-      if (!addImagesOnly) {
-        final scratch = File('$path.incoming');
+      final scratch = File('$path.incoming');
+      try {
+        final stage = Catalog(sqlite3.open(scratch.path));
         try {
-          final stage = Catalog(sqlite3.open(scratch.path));
-          try {
-            stage.transaction(
-              () => stage.db.execute(
-                'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
-              ),
-            );
-            await collect(stage, OfficialApi(httpClient), report);
-          } finally {
-            stage.db.close();
-          }
-          report('텍스트 DB 검증 완료 · 적용 중');
-          catalog.publish(scratch.path);
+          stage.transaction(
+            () => stage.db.execute(
+              'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
+            ),
+          );
+          await collect(stage, OfficialApi(httpClient), report);
         } finally {
-          if (await scratch.exists()) await scratch.delete();
+          stage.db.close();
         }
-      }
-      final directory = offlineImageDirectory(File(path).parent);
-      catalog.setMetadata('imageMode', mode.name);
-      if (mode == InstallMode.full) {
-        report('이미지 목록 확인 중');
-        await installImages(catalog, directory, httpClient, report);
-        catalog.setMetadata('offlineImagesFor', catalog.updated!);
-      } else if (await directory.exists()) {
-        await directory.delete(recursive: true);
+        report('텍스트 DB 검증 완료 · 적용 중');
+        catalog.publish(scratch.path);
+      } finally {
+        if (await scratch.exists()) await scratch.delete();
       }
     } finally {
       catalog.db.close();

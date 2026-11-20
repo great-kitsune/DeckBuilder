@@ -99,19 +99,20 @@ void main() {
       expect(
         db.db
             .select('SELECT official_id FROM replacements')
-            .single['official_id'],
-        'x',
+            .map((r) => r['official_id'])
+            .toSet(),
+        {'x', 'y'},
       );
-      expect(db.candidates('local-b').toSet(), {'x', 'y'});
+      expect(db.candidates('local-b'), ['y']);
       expect(
         db.db
             .select("SELECT active FROM cards WHERE id='old'")
             .single['active'],
         0,
       );
-      expect(db.search(Filters()), hasLength(3));
+      expect(db.search(Filters()), hasLength(2));
       db.publish(path);
-      expect(db.search(Filters()), hasLength(3));
+      expect(db.search(Filters()), hasLength(2));
     },
   );
   test('snapshot failure rolls back previous searchable data', () {
@@ -120,7 +121,6 @@ void main() {
     final path = '${dir.path}/snapshot';
     db.insert(
       card('local', 'Local', prints: [edition('collision', 'A', '1', 1)]),
-      spoiler: true,
     );
     db.insert(card('old', 'Old'));
     final stage = Catalog(sqlite3.open(path));

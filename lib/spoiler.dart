@@ -111,14 +111,7 @@ class _SpoilerFormState extends State<SpoilerForm> {
     try {
       widget.catalog.transaction(() {
         widget.catalog.insert(card, spoiler: true, photo: image);
-        if (field('영문명').isNotEmpty) {
-          widget.catalog.db.execute('UPDATE cards SET norm=? WHERE id=?', [
-            normalizedName(field('영문명')),
-            id,
-          ]);
-        }
-        final matches = widget.catalog.candidates(id);
-        if (matches.length == 1) widget.catalog.resolve(id, matches.single);
+        widget.catalog.reconcileSpoilers(only: id);
       });
       Navigator.pop(context, true);
     } catch (e) {

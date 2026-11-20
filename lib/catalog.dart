@@ -2,6 +2,9 @@ import 'dart:convert';
 import 'dart:typed_data';
 
 import 'package:sqlite3/sqlite3.dart';
+import 'package:crypto/crypto.dart';
+
+part 'integrity.dart';
 
 typedef Json = Map<String, dynamic>;
 const facets = [
@@ -29,25 +32,29 @@ class Catalog {
   Catalog(this.db) {
     db.execute('PRAGMA busy_timeout=5000');
     db.execute('PRAGMA foreign_keys=ON');
-    db.execute('''
-      CREATE TABLE IF NOT EXISTS cards(
+    for (final prefix in ['', 'spoiler_']) {
+      db.execute('''
+      CREATE TABLE IF NOT EXISTS ${prefix}cards(
         id TEXT PRIMARY KEY, name TEXT NOT NULL, norm TEXT NOT NULL,
         spoiler INTEGER NOT NULL, active INTEGER NOT NULL DEFAULT 1,
         effect TEXT NOT NULL, payload TEXT NOT NULL, photo BLOB
       );
-      CREATE INDEX IF NOT EXISTS by_name ON cards(norm);
-      CREATE TABLE IF NOT EXISTS editions(
-        id TEXT PRIMARY KEY, card TEXT NOT NULL REFERENCES cards(id),
+      CREATE INDEX IF NOT EXISTS ${prefix}by_name ON ${prefix}cards(norm);
+      CREATE TABLE IF NOT EXISTS ${prefix}editions(
+        id TEXT PRIMARY KEY, card TEXT NOT NULL REFERENCES ${prefix}cards(id),
         set_code TEXT, number TEXT, rarity TEXT, payload TEXT NOT NULL,
         position INTEGER NOT NULL DEFAULT 0
       );
-      CREATE INDEX IF NOT EXISTS by_print ON editions(set_code,number);
-      CREATE INDEX IF NOT EXISTS prints_by_card ON editions(card);
-      CREATE TABLE IF NOT EXISTS tags(
-        card TEXT NOT NULL REFERENCES cards(id), kind TEXT NOT NULL, value TEXT NOT NULL,
+      CREATE INDEX IF NOT EXISTS ${prefix}by_print ON ${prefix}editions(set_code,number);
+      CREATE INDEX IF NOT EXISTS ${prefix}prints_by_card ON ${prefix}editions(card);
+      CREATE TABLE IF NOT EXISTS ${prefix}tags(
+        card TEXT NOT NULL REFERENCES ${prefix}cards(id), kind TEXT NOT NULL, value TEXT NOT NULL,
         PRIMARY KEY(card,kind,value)
       );
-      CREATE INDEX IF NOT EXISTS by_tag ON tags(kind,value,card);
+      CREATE INDEX IF NOT EXISTS ${prefix}by_tag ON ${prefix}tags(kind,value,card);
+      ''');
+    }
+    db.execute('''
       CREATE TABLE IF NOT EXISTS retired_editions(id TEXT PRIMARY KEY, card TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS replacements(local_id TEXT PRIMARY KEY, official_id TEXT NOT NULL REFERENCES cards(id));
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -70,6 +77,25 @@ class Catalog {
     db.execute(
       'CREATE INDEX IF NOT EXISTS edition_order ON editions(card,position)',
     );
+    db.execute('''
+      CREATE VIEW IF NOT EXISTS library_cards AS SELECT * FROM cards UNION ALL SELECT * FROM spoiler_cards;
+      CREATE VIEW IF NOT EXISTS library_tags AS SELECT * FROM tags UNION ALL SELECT * FROM spoiler_tags;
+      CREATE VIEW IF NOT EXISTS library_editions AS SELECT * FROM editions UNION ALL SELECT * FROM spoiler_editions;
+      CREATE TABLE IF NOT EXISTS install_manifest(kind TEXT, id TEXT, digest TEXT NOT NULL, PRIMARY KEY(kind,id));
+    ''');
+    if (db.select('SELECT 1 FROM cards WHERE spoiler=1 LIMIT 1').isNotEmpty) {
+      transaction(() {
+        db.execute('''
+          INSERT INTO spoiler_cards SELECT * FROM cards WHERE spoiler=1;
+          INSERT INTO spoiler_editions SELECT e.* FROM editions e JOIN cards c ON c.id=e.card WHERE c.spoiler=1;
+          INSERT INTO spoiler_tags SELECT t.* FROM tags t JOIN cards c ON c.id=t.card WHERE c.spoiler=1;
+          DELETE FROM tags WHERE card IN (SELECT id FROM cards WHERE spoiler=1);
+          DELETE FROM editions WHERE card IN (SELECT id FROM cards WHERE spoiler=1);
+          DELETE FROM cards WHERE spoiler=1;
+        ''');
+        reconcileSpoilers();
+      });
+    }
   }
 
   void transaction(void Function() body) {
@@ -84,6 +110,7 @@ class Catalog {
   }
 
   void insert(Json input, {bool spoiler = false, Uint8List? photo}) {
+    final prefix = spoiler ? 'spoiler_' : '';
     final c = Json.of(input)..remove('result_editions');
     final prints = c.remove('editions') as List;
     final id = c['uuid'] as String;
@@ -92,7 +119,7 @@ class Catalog {
       throw const FormatException('빈 카드 식별자 또는 이름');
     }
     db.execute(
-      'INSERT INTO cards(id,name,norm,spoiler,effect,payload,photo) VALUES(?,?,?,?,?,?,?)',
+      'INSERT INTO ${prefix}cards(id,name,norm,spoiler,effect,payload,photo) VALUES(?,?,?,?,?,?,?)',
       [
         id,
         name,
@@ -117,7 +144,7 @@ class Catalog {
     };
     for (final g in groups.entries) {
       for (final v in (g.value as List? ?? []).toSet()) {
-        db.execute('INSERT INTO tags VALUES(?,?,?)', [id, g.key, v]);
+        db.execute('INSERT INTO ${prefix}tags VALUES(?,?,?)', [id, g.key, v]);
       }
     }
     for (final (position, e) in prints.cast<Json>().indexed) {
@@ -125,7 +152,7 @@ class Catalog {
         throw const FormatException('인쇄판의 카드 ID 불일치');
       }
       db.execute(
-        'INSERT INTO editions(id,card,set_code,number,rarity,payload,position) VALUES(?,?,?,?,?,?,?)',
+        'INSERT INTO ${prefix}editions(id,card,set_code,number,rarity,payload,position) VALUES(?,?,?,?,?,?,?)',
         [
           e['uuid'] as String,
           id,
@@ -147,22 +174,19 @@ class Catalog {
   void setMetadata(String key, String value) =>
       db.execute('INSERT OR REPLACE INTO metadata VALUES(?,?)', [key, value]);
   String? get updated => metadata('updated');
-  bool get useOfflineImages => metadata('imageMode') == 'full';
-  bool get imagesComplete =>
-      updated != null && metadata('offlineImagesFor') == updated;
   bool get thumbnailGrid => metadata('thumbnailGrid') == '1';
 
   Map<String, List<String>> options() {
     final result = {for (final f in facets) f: <String>[]};
     for (final row in db.select(
-      'SELECT DISTINCT kind,value FROM tags JOIN cards ON cards.id=tags.card WHERE active=1 ORDER BY value',
+      'SELECT DISTINCT kind,value FROM library_tags JOIN library_cards ON library_cards.id=library_tags.card WHERE active=1 ORDER BY value',
     )) {
-      result[row['kind']]!.add(row['value'] as String);
+      result[row['kind']]?.add(row['value'] as String);
     }
     for (final item in {'Set': 'set_code', 'Rarity': 'rarity'}.entries) {
       result[item.key] = db
           .select(
-            'SELECT DISTINCT ${item.value} v FROM editions JOIN cards ON cards.id=editions.card WHERE active=1 AND ${item.value} IS NOT NULL ORDER BY v',
+            'SELECT DISTINCT ${item.value} v FROM library_editions JOIN library_cards ON library_cards.id=library_editions.card WHERE active=1 AND ${item.value} IS NOT NULL ORDER BY v',
           )
           .map((r) => r['v'] as String)
           .toList();
@@ -177,7 +201,7 @@ class Catalog {
       final term = f.text.trim();
       clauses.add(
         '''(instr(lower(c.name),lower(?))>0 OR instr(c.norm,lower(?))>0 OR instr(lower(c.effect),lower(?))>0
-        OR EXISTS (SELECT 1 FROM editions t WHERE t.card=c.id AND instr(lower(json_extract(t.payload,'\$.effect_raw')),lower(?))>0))''',
+        OR EXISTS (SELECT 1 FROM library_editions t WHERE t.card=c.id AND instr(lower(json_extract(t.payload,'\$.effect_raw')),lower(?))>0))''',
       );
       args.addAll([term, term, term, term]);
     }
@@ -215,7 +239,7 @@ class Catalog {
       final values = f.selected[g] ?? {};
       if (values.isEmpty) continue;
       clauses.add(
-        '(SELECT count(*) FROM tags t WHERE t.card=c.id AND t.kind=? AND t.value IN (${slots(values.length)})) >= ?',
+        '(SELECT count(*) FROM library_tags t WHERE t.card=c.id AND t.kind=? AND t.value IN (${slots(values.length)})) >= ?',
       );
       args.addAll([g, ...values, f.all.contains(g) ? values.length : 1]);
     }
@@ -233,7 +257,7 @@ class Catalog {
     }
     if (editionConditions.isNotEmpty) {
       clauses.add(
-        'EXISTS (SELECT 1 FROM editions e WHERE e.card=c.id AND ${editionConditions.join(' AND ')} GROUP BY e.card ${coverage.isEmpty ? '' : 'HAVING ${coverage.join(' AND ')}'})',
+        'EXISTS (SELECT 1 FROM library_editions e WHERE e.card=c.id AND ${editionConditions.join(' AND ')} GROUP BY e.card ${coverage.isEmpty ? '' : 'HAVING ${coverage.join(' AND ')}'})',
       );
       args.addAll(editionArgs);
       if (f.editions) {
@@ -242,32 +266,75 @@ class Catalog {
       }
     }
     return db.select(
-      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.rarity' : 'NULL AS edition'} FROM cards c ${f.editions ? 'LEFT JOIN editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
+      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
       args,
     );
   }
 
   List<String> candidates(String localId) {
-    final byPrint = db.select(
-      '''SELECT DISTINCT c.id FROM editions local JOIN editions e
-      ON local.set_code=e.set_code COLLATE NOCASE AND local.number=e.number COLLATE NOCASE
-      JOIN cards c ON e.card=c.id WHERE local.card=? AND c.active=1 AND c.spoiler=0''',
+    final local = db.select(
+      'SELECT name,payload FROM spoiler_cards WHERE id=?',
       [localId],
-    );
-    final byName = db.select(
-      '''SELECT c.id FROM cards local JOIN cards c ON local.norm=c.norm
-      WHERE local.id=? AND c.active=1 AND c.spoiler=0''',
-      [localId],
-    );
-    return {
-      ...byPrint,
-      ...byName,
-    }.map((r) => r['id'] as String).toSet().toList();
+    ).single;
+    final data = jsonDecode(local['payload'] as String) as Json;
+    final names = {
+      normalizedName(local['name'] as String),
+      normalizedName(data['english_name'] as String? ?? ''),
+    }..remove('');
+    final named = db
+        .select(
+          'SELECT id FROM cards WHERE active=1 AND norm IN (${List.filled(names.length, '?').join(',')}) ORDER BY id',
+          names.toList(),
+        )
+        .map((r) => r['id'] as String)
+        .toList();
+    if (named.length == 1) return named;
+    final printed = db
+        .select(
+          '''SELECT DISTINCT e.card FROM spoiler_editions s JOIN editions e
+      ON s.set_code=e.set_code COLLATE NOCASE AND s.number=e.number COLLATE NOCASE
+      JOIN cards c ON c.id=e.card WHERE s.card=? AND c.active=1 ORDER BY e.card''',
+          [localId],
+        )
+        .map((r) => r['card'] as String)
+        .toList();
+    if (named.isEmpty) return printed;
+    final matching = named.where(printed.contains).toList();
+    return matching.isEmpty ? named : matching;
   }
 
   void resolve(String localId, String officialId) {
+    // A background install may have resolved a detail page that was left open.
+    if (db.select('SELECT 1 FROM replacements WHERE local_id=?', [
+      localId,
+    ]).isNotEmpty) {
+      return;
+    }
     db.execute('INSERT INTO replacements VALUES(?,?)', [localId, officialId]);
-    db.execute('UPDATE cards SET active=0 WHERE id=? AND spoiler=1', [localId]);
+    db.execute('UPDATE spoiler_cards SET active=0 WHERE id=?', [localId]);
+  }
+
+  int reconcileSpoilers({String? only}) {
+    final rows = db.select(
+      'SELECT id FROM spoiler_cards WHERE active<>0 ${only == null ? '' : 'AND id=?'}',
+      [?only],
+    );
+    var resolved = 0;
+    for (final row in rows) {
+      final id = row['id'] as String;
+      final matches = candidates(id);
+      if (matches.length == 1) {
+        resolve(id, matches.single);
+        resolved++;
+      } else {
+        // Ambiguous references stay available for manual selection in Settings.
+        db.execute('UPDATE spoiler_cards SET active=? WHERE id=?', [
+          matches.isEmpty ? 1 : 2,
+          id,
+        ]);
+      }
+    }
+    return resolved;
   }
 
   // Stage is a closed, independently validated SQLite file on the same device.
@@ -295,13 +362,8 @@ class Catalog {
         );
         db.execute('INSERT INTO tags SELECT * FROM incoming.tags');
         db.execute('INSERT INTO editions SELECT * FROM incoming.editions');
-        for (final row in db.select(
-          'SELECT id FROM cards WHERE spoiler=1 AND active=1',
-        )) {
-          final local = row['id'] as String;
-          final matches = candidates(local);
-          if (matches.length == 1) resolve(local, matches.single);
-        }
+        reconcileSpoilers();
+        recordManifest();
         db.execute("INSERT OR REPLACE INTO metadata VALUES('updated',?)", [
           DateTime.now().toUtc().toIso8601String(),
         ]);

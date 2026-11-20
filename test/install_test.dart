@@ -1,11 +1,12 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
-import 'package:deck_builder/catalog.dart';
-import 'package:deck_builder/main.dart';
-import 'package:deck_builder/offline_images.dart';
-import 'package:deck_builder/sync.dart';
+import 'package:deck_builder/card_image.dart';
+import 'package:deck_builder/search_view.dart';
 import 'package:flutter/material.dart';
+import 'package:deck_builder/catalog.dart';
+import 'package:deck_builder/sync.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:http/http.dart' as http;
 import 'package:http/testing.dart';
@@ -14,157 +15,195 @@ import 'package:sqlite3/sqlite3.dart';
 import 'catalog_test.dart' show card, edition;
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
   late Directory root;
   late String path;
   late Catalog catalog;
-  late List<String> requests;
-  late MockClient client;
-  late String versionB;
-  late bool failB;
-  const a = '/cards/images/a.jpg', b = '/cards/images/b.jpg';
   setUp(() {
     root = Directory.systemTemp.createTempSync();
-    path = '${root.path}/catalog.sqlite';
+    path = '${root.path}/catalog.db';
     catalog = Catalog(sqlite3.open(path));
-    versionB = '1';
-    failB = false;
-    requests = [];
-    client = MockClient((request) async {
-      final route = request.url.path;
-      requests.add(route);
-      if (route == a || route == b) {
-        if (route == b && failB) return http.Response('missing', 404);
-        return http.Response.bytes(
-          [1, 2, 3],
-          200,
-          headers: {'content-type': 'image/jpeg'},
-        );
-      }
-      return http.Response(
-        jsonEncode(switch (route) {
-          '/cards/all' => [
-            {'uuid': 'id', 'slug': 'slug'},
-          ],
-          '/cards/search' => {
-            'total_pages': 1,
-            'page': 1,
-            'data': [
-              card(
-                'id',
-                'Sword',
-                prints: [
-                  {...edition('p1', 'A', '1', 1), 'image': a},
-                  {
-                    ...edition('p2', 'B', '1', 1),
-                    'image': b,
-                    'last_update': versionB,
-                  },
-                ],
-              ),
-            ],
-          },
-          _ => throw StateError(route),
-        }),
-        200,
-      );
-    });
   });
   tearDown(() {
     catalog.db.close();
-    client.close();
     root.deleteSync(recursive: true);
   });
-  Future<void> install(InstallMode mode) =>
-      updateCatalog(path, (_) {}, mode: mode, client: client);
 
   test(
-    'existing text upgrades using image requests only; incomplete installs can resume',
+    'fresh installation and reinstall only request text and record the expected snapshot',
     () async {
-      catalog.setMetadata('wifiOnly', '1');
-      await install(InstallMode.text);
-      expect(requests, ['/cards/all', '/cards/search']);
-      final snapshot = catalog.updated;
-      final dir = offlineImageDirectory(root);
-      expect(dir.existsSync(), false);
-      failB = true;
-      requests.clear();
-      await expectLater(install(InstallMode.full), throwsFormatException);
-      expect(catalog.imagesComplete, false);
-      expect(requests, [a, b]);
-      expect(imageFile(dir, a, '').readAsBytesSync(), [1, 2, 3]);
-      expect(dir.listSync(), hasLength(1));
-      requests.clear();
-      failB = false;
-      await install(InstallMode.full);
-      expect(requests, [b]);
-      expect(catalog.updated, snapshot);
-      expect(catalog.imagesComplete, true);
-      expect(catalog.useOfflineImages, true);
-      expect(dir.listSync(), hasLength(2));
+      final requests = <String>[];
+      final client = MockClient((req) async {
+        requests.add(req.url.path);
+        return http.Response(
+          jsonEncode(switch (req.url.path) {
+            '/cards/all' => [
+              {'uuid': 'c', 'slug': 'c'},
+            ],
+            '/cards/search' => {
+              'page': 1,
+              'total_pages': 1,
+              'data': [
+                card(
+                  'c',
+                  'First',
+                  prints: [
+                    {
+                      ...edition('e', 'S', '1', 2),
+                      'image': '/cards/images/x.jpg',
+                    },
+                  ],
+                ),
+              ],
+            },
+            _ => throw StateError('Unexpected image request'),
+          }),
+          200,
+        );
+      });
+      catalog.setMetadata('imageMode', 'full');
+      for (var i = 0; i < 2; i++) {
+        await updateCatalog(path, (_) {}, client: client);
+      }
+      expect(requests, [
+        '/cards/all',
+        '/cards/search',
+        '/cards/all',
+        '/cards/search',
+      ]);
+      expect(catalog.inspect(), (
+        missing: 0,
+        damaged: 0,
+        replaced: 0,
+        hasManifest: true,
+      ));
+      catalog.db.execute(
+        "DELETE FROM editions WHERE id='e'; UPDATE cards SET effect='changed' WHERE id='c'",
+      );
+      final report = catalog.inspect();
+      expect(report.missing, 1);
+      expect(report.damaged, 1);
     },
   );
 
   test(
-    'fresh full install, refresh of changed images and switch to text',
-    () async {
-      await install(InstallMode.full);
-      expect(requests, ['/cards/all', '/cards/search', a, b]);
-      final dir = offlineImageDirectory(root);
-      expect(imageFile(dir, b, '1').existsSync(), true);
-      requests.clear();
-      versionB = '2';
-      await install(InstallMode.full);
-      expect(requests, ['/cards/all', '/cards/search', b]);
-      expect(imageFile(dir, b, '1').existsSync(), false);
-      expect(imageFile(dir, b, '2').existsSync(), true);
-      expect(dir.listSync(), hasLength(2));
-      requests.clear();
-      await install(InstallMode.text);
-      expect(requests, ['/cards/all', '/cards/search']);
-      expect(dir.existsSync(), false);
-      expect(catalog.imagesComplete, false);
-      expect(catalog.useOfflineImages, false);
-      expect(catalog.search(Filters()), hasLength(1));
+    'same name candidates remain distinct and existing spoilers migrate with their photos and references',
+    () {
+      catalog.insert(
+        card('a', 'Nameless', prints: [edition('ea', 'SET', '001', 1)]),
+      );
+      catalog.insert(
+        card('b', 'Nameless', prints: [edition('eb', 'SET', '002', 1)]),
+      );
+      catalog.insert(card('other', 'Other'));
+      // Seed the previous schema representation, including an already-resolved row.
+      catalog.insert({
+        ...card('local-a', '로컬', prints: [edition('le', 'SET', '002', 1)]),
+        'english_name': ' NAMELESS ',
+      }, photo: Uint8List.fromList([1, 2]));
+      catalog.insert(card('local-b', 'Nameless'));
+      catalog.insert(card('local-old', 'Former'));
+      catalog.db.execute(
+        "UPDATE cards SET spoiler=1 WHERE id LIKE 'local-%'; UPDATE cards SET active=0 WHERE id='local-old'; INSERT INTO replacements VALUES('local-old','other')",
+      );
+      final migrated = Catalog(catalog.db);
+      expect(migrated.updated, isNull);
+      expect(
+        migrated.db.select("SELECT * FROM cards WHERE spoiler=1"),
+        isEmpty,
+      );
+      expect(
+        migrated.db
+            .select("SELECT photo FROM spoiler_cards WHERE id='local-a'")
+            .single['photo'],
+        [1, 2],
+      );
+      expect(
+        migrated.db
+            .select(
+              "SELECT official_id FROM replacements WHERE local_id='local-a'",
+            )
+            .single['official_id'],
+        'b',
+      );
+      expect(
+        migrated.db
+            .select(
+              "SELECT official_id FROM replacements WHERE local_id='local-old'",
+            )
+            .single['official_id'],
+        'other',
+      );
+      expect(migrated.candidates('local-b').toSet(), {'a', 'b'});
+      expect(
+        migrated.db
+            .select("SELECT active FROM spoiler_cards WHERE id='local-b'")
+            .single['active'],
+        2,
+      );
+      expect(migrated.search(Filters()..text = 'Nameless'), hasLength(2));
+      migrated.insert(card('new', 'Other'), spoiler: true);
+      migrated.insert(card('unique', 'Still local'), spoiler: true);
+      expect(migrated.inspect().replaced, 1);
+      expect(migrated.inspect().replaced, 0);
+      expect(migrated.search(Filters()..text = 'Still local'), hasLength(1));
     },
   );
 
-  testWidgets('text users can cancel or confirm an images-only upgrade', (
+  testWidgets('a resolved local reference opens the official card details', (
     tester,
   ) async {
-    InstallMode? result;
-    await tester.pumpWidget(
-      MaterialApp(
-        home: Builder(
-          builder: (context) => TextButton(
-            onPressed: () async {
-              result = await showDialog<InstallMode>(
-                context: context,
-                builder: (_) => const InstallDialog(
-                  hasText: true,
-                  hasImages: false,
-                  offlineRequested: false,
-                ),
-              );
-            },
-            child: const Text('설치 방식 선택'),
-          ),
-        ),
+    catalog.insert(
+      card(
+        'official',
+        'Official',
+        prints: [edition('edition', 'API', '001', 1)],
       ),
     );
-    Future<void> selectFull() async {
-      await tester.tap(find.text('설치 방식 선택'));
-      await tester.pumpAndSettle();
-      expect(find.textContaining('오프라인 이미지만 추가'), findsOneWidget);
-      await tester.tap(find.text('텍스트 + 이미지 모두 설치'));
-    }
-
-    await selectFull();
-    await tester.tap(find.text('취소'));
-    await tester.pumpAndSettle();
-    expect(result, isNull);
-    await selectFull();
-    await tester.tap(find.text('확인'));
-    await tester.pumpAndSettle();
-    expect(result, InstallMode.full);
+    catalog.insert({
+      ...card('local', 'Local preview'),
+      'english_name': 'Official',
+    }, spoiler: true);
+    catalog.inspect();
+    await tester.pumpWidget(
+      MaterialApp(home: CardDetail(catalog, 'local', null)),
+    );
+    expect(find.text('Official'), findsOneWidget);
+    expect(find.text('API #001'), findsOneWidget);
+    expect(find.text('스포일러 · 공식 등록 전'), findsNothing);
   });
+
+  test(
+    'only viewed images are cached, shared between readers, and recovered when damaged',
+    () async {
+      final good = base64Decode(
+        'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGMQUDAAAACkAGE0Zn1yAAAAAElFTkSuQmCC',
+      );
+      var requests = 0;
+      final client = MockClient((_) async {
+        requests++;
+        return http.Response.bytes(good, 200);
+      });
+      final dir = Directory('${root.path}/images');
+      Future<Uint8List> view() => viewedImage(
+        '/cards/images/a.png',
+        'v1',
+        directories: [dir],
+        client: client,
+      );
+      await Future.wait([view(), view()]);
+      expect(requests, 1);
+      expect(await view(), good);
+      expect(requests, 1);
+      (dir.listSync().single as File).writeAsBytesSync([1, 2, 3]);
+      expect(await view(), good);
+      expect(requests, 2);
+      (dir.listSync().single as File).writeAsBytesSync([0]);
+      expect(await removeDamagedImages(directories: [dir]), 1);
+      expect(await removeDamagedImages(directories: [dir]), 0);
+      expect(requests, 2);
+      expect(await view(), good);
+      expect(requests, 3);
+    },
+  );
 }
