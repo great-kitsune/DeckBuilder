@@ -1,0 +1,414 @@
+import 'package:flutter/material.dart';
+import 'package:flutter/foundation.dart' show ValueListenable;
+import 'catalog.dart';
+import 'search_view.dart';
+
+Future<String?> _deckName(
+  BuildContext context,
+  String title, [
+  String initial = '',
+]) {
+  var name = initial;
+  return showDialog<String>(
+    context: context,
+    builder: (dialog) => StatefulBuilder(
+      builder: (context, redraw) => AlertDialog(
+        title: Text(title),
+        content: TextFormField(
+          initialValue: initial,
+          autofocus: true,
+          decoration: const InputDecoration(labelText: '덱 이름'),
+          onChanged: (value) => redraw(() => name = value),
+          onFieldSubmitted: (_) {
+            if (name.trim().isNotEmpty) Navigator.pop(dialog, name.trim());
+          },
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: name.trim().isEmpty
+                ? null
+                : () => Navigator.pop(dialog, name.trim()),
+            child: const Text('저장'),
+          ),
+        ],
+      ),
+    ),
+  );
+}
+
+class DeckList extends StatefulWidget {
+  final Catalog catalog;
+  final ValueListenable<int> catalogRevision;
+  final VoidCallback onCatalogChange;
+  const DeckList(
+    this.catalog, {
+    super.key,
+    required this.catalogRevision,
+    required this.onCatalogChange,
+  });
+  @override
+  State<DeckList> createState() => _DeckListState();
+}
+
+class _DeckListState extends State<DeckList> {
+  Future<void> open(DeckInfo deck) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => ValueListenableBuilder<int>(
+          valueListenable: widget.catalogRevision,
+          builder: (context, revision, _) => DeckEditor(
+            widget.catalog,
+            deck,
+            revision: revision,
+            onCatalogChange: widget.onCatalogChange,
+          ),
+        ),
+      ),
+    );
+    if (mounted) setState(() {});
+  }
+
+  Future<void> create() async {
+    final name = await _deckName(context, '새 Standard 덱');
+    if (name == null || !mounted) return;
+    try {
+      final id = widget.catalog.createDeck(name);
+      setState(() {});
+      await open((id: id, name: name));
+    } catch (e) {
+      if (mounted) _showError(context, e);
+    }
+  }
+
+  Future<void> manage(String action, DeckInfo deck) async {
+    final catalog = widget.catalog;
+    try {
+      switch (action) {
+        case '이름 변경':
+          final name = await _deckName(context, action, deck.name);
+          if (name == null || !mounted) return;
+          catalog.renameDeck(deck.id, name);
+        case '복제':
+          catalog.duplicateDeck(deck);
+        case '삭제':
+          final yes = await showDialog<bool>(
+            context: context,
+            builder: (ctx) => AlertDialog(
+              title: const Text('덱 삭제'),
+              content: Text('‘${deck.name}’ 덱을 삭제하시겠습니까?'),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx, false),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: () => Navigator.pop(ctx, true),
+                  child: const Text('삭제'),
+                ),
+              ],
+            ),
+          );
+          if (yes != true || !mounted) return;
+          catalog.deleteDeck(deck.id);
+      }
+      setState(() {});
+    } catch (e) {
+      if (mounted) _showError(context, e);
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final decks = widget.catalog.decks();
+    return Column(
+      children: [
+        Align(
+          alignment: Alignment.centerRight,
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: FilledButton.icon(
+              onPressed: create,
+              icon: const Icon(Icons.add),
+              label: const Text('새 덱'),
+            ),
+          ),
+        ),
+        Expanded(
+          child: decks.isEmpty
+              ? const Center(child: Text('저장된 덱이 없습니다.'))
+              : ListView.builder(
+                  itemCount: decks.length,
+                  itemBuilder: (context, i) {
+                    final deck = decks[i];
+                    return ListTile(
+                      leading: const Icon(Icons.style_outlined),
+                      title: Text(deck.name),
+                      subtitle: const Text('Standard'),
+                      onTap: () => open(deck),
+                      trailing: PopupMenuButton<String>(
+                        tooltip: '덱 관리',
+                        onSelected: (action) => manage(action, deck),
+                        itemBuilder: (_) => [
+                          for (final action in ['이름 변경', '복제', '삭제'])
+                            PopupMenuItem(value: action, child: Text(action)),
+                        ],
+                      ),
+                    );
+                  },
+                ),
+        ),
+      ],
+    );
+  }
+}
+
+void _showError(BuildContext context, Object error) {
+  ScaffoldMessenger.of(
+    context,
+  ).showSnackBar(SnackBar(content: Text('덱 편집 실패 · $error')));
+}
+
+class DeckEditor extends StatefulWidget {
+  final Catalog catalog;
+  final DeckInfo deck;
+  final int revision;
+  final VoidCallback onCatalogChange;
+  const DeckEditor(
+    this.catalog,
+    this.deck, {
+    super.key,
+    required this.revision,
+    required this.onCatalogChange,
+  });
+  @override
+  State<DeckEditor> createState() => _DeckEditorState();
+}
+
+class _DeckEditorState extends State<DeckEditor> {
+  DeckZone zone = DeckZone.main;
+  bool picking = false, openedSearch = false;
+
+  void change(VoidCallback write) {
+    try {
+      write();
+    } catch (e) {
+      _showError(context, e);
+    }
+    setState(() {});
+  }
+
+  Future<void> detail(DeckEntry e) async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute<void>(
+        builder: (_) => CardDetail(
+          widget.catalog,
+          e.card,
+          e.edition.isEmpty ? null : e.edition,
+        ),
+      ),
+    );
+    if (!mounted) return;
+    widget.onCatalogChange();
+    setState(() {});
+  }
+
+  Future<void> move(DeckEntry entry, DeckZone target) async {
+    int? count = 1;
+    if (entry.quantity > 1) {
+      var quantity = 1;
+      count = await showDialog<int>(
+        context: context,
+        builder: (ctx) {
+          return StatefulBuilder(
+            builder: (context, redraw) => AlertDialog(
+              title: Text('${target.label}로 이동'),
+              content: TextFormField(
+                autofocus: true,
+                initialValue: '1',
+                keyboardType: TextInputType.number,
+                decoration: InputDecoration(
+                  labelText: '이동 수량 (1–${entry.quantity})',
+                ),
+                onChanged: (v) => redraw(() => quantity = int.tryParse(v) ?? 0),
+              ),
+              actions: [
+                TextButton(
+                  onPressed: () => Navigator.pop(ctx),
+                  child: const Text('취소'),
+                ),
+                FilledButton(
+                  onPressed: quantity < 1 || quantity > entry.quantity
+                      ? null
+                      : () => Navigator.pop(ctx, quantity),
+                  child: const Text('이동'),
+                ),
+              ],
+            ),
+          );
+        },
+      );
+    }
+    if (count != null && mounted) {
+      change(() => widget.catalog.takeCopies(entry, count!, to: target));
+    }
+  }
+
+  void closePicker() {
+    FocusManager.instance.primaryFocus?.unfocus();
+    setState(() => picking = false);
+  }
+
+  Widget contents(List<DeckEntry> entries, bool wide) => ListView(
+    padding: const EdgeInsets.fromLTRB(12, 4, 12, 20),
+    children: [
+      for (final group in DeckZone.values) ...[
+        Padding(
+          padding: const EdgeInsets.only(top: 12),
+          child: Row(
+            children: [
+              Expanded(
+                child: Text(
+                  '${group.label} · ${entries.where((e) => e.zone == group).fold(0, (n, e) => n + e.quantity)}장',
+                  style: Theme.of(context).textTheme.titleMedium,
+                ),
+              ),
+              TextButton.icon(
+                icon: const Icon(Icons.add),
+                label: const Text('카드 추가'),
+                key: ValueKey('add-${group.name}'),
+                onPressed: () => setState(() {
+                  zone = group;
+                  openedSearch = true;
+                  picking = !wide;
+                }),
+              ),
+            ],
+          ),
+        ),
+        const Divider(height: 1),
+        for (final e in entries.where((e) => e.zone == group))
+          ListTile(
+            contentPadding: EdgeInsets.zero,
+            title: Text(e.name),
+            subtitle:
+                e.printing.isEmpty && e.edition.isEmpty && e.status == null
+                ? null
+                : Text(
+                    [
+                      if (e.printing.isNotEmpty)
+                        e.printing
+                      else if (e.edition.isNotEmpty)
+                        e.edition,
+                      ?e.status,
+                    ].join(' · '),
+                  ),
+            onTap: () => detail(e),
+            trailing: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                IconButton(
+                  tooltip: '한 장 빼기',
+                  icon: const Icon(Icons.remove),
+                  onPressed: () =>
+                      change(() => widget.catalog.takeCopies(e, 1)),
+                ),
+                Text('${e.quantity}'),
+                IconButton(
+                  tooltip: '한 장 더하기',
+                  icon: const Icon(Icons.add),
+                  onPressed: () =>
+                      change(() => widget.catalog.incrementEntry(e)),
+                ),
+                PopupMenuButton<DeckZone>(
+                  tooltip: '구역 이동',
+                  onSelected: (z) => move(e, z),
+                  itemBuilder: (_) => [
+                    for (final z in DeckZone.values.where((z) => z != e.zone))
+                      PopupMenuItem(value: z, child: Text('${z.label}로 이동')),
+                  ],
+                ),
+              ],
+            ),
+          ),
+      ],
+    ],
+  );
+
+  @override
+  Widget build(BuildContext context) {
+    final wide = MediaQuery.sizeOf(context).width >= 840;
+    final entries = widget.catalog.deckEntries(widget.deck.id);
+    final counts = <String, int>{};
+    for (final e in entries) {
+      counts.update(e.card, (n) => n + e.quantity, ifAbsent: () => e.quantity);
+    }
+    final search = Column(
+      children: [
+        DropdownButton<DeckZone>(
+          value: zone,
+          onChanged: (v) => setState(() => zone = v!),
+          items: [
+            for (final z in DeckZone.values)
+              DropdownMenuItem(value: z, child: Text('${z.label}에 추가')),
+          ],
+        ),
+        Expanded(
+          child: SearchView(
+            widget.catalog,
+            revision: widget.revision,
+            deckCounts: counts,
+            onPick: (card, edition) => change(
+              () =>
+                  widget.catalog.addToDeck(widget.deck.id, zone, card, edition),
+            ),
+          ),
+        ),
+      ],
+    );
+    final showPicker = !wide && picking;
+    return PopScope(
+      canPop: !showPicker,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop && showPicker) closePicker();
+      },
+      child: Scaffold(
+        appBar: AppBar(
+          title: Text(
+            showPicker ? '카드 추가 · ${widget.deck.name}' : widget.deck.name,
+          ),
+          leading: showPicker
+              ? IconButton(
+                  icon: const BackButtonIcon(),
+                  tooltip: '덱으로',
+                  onPressed: closePicker,
+                )
+              : null,
+        ),
+        body: SafeArea(
+          top: false,
+          child: wide
+              ? Row(
+                  children: [
+                    Expanded(child: search),
+                    const VerticalDivider(width: 1),
+                    Expanded(child: contents(entries, true)),
+                  ],
+                )
+              : IndexedStack(
+                  index: showPicker ? 1 : 0,
+                  children: [
+                    contents(entries, false),
+                    if (openedSearch) search else const SizedBox.shrink(),
+                  ],
+                ),
+        ),
+      ),
+    );
+  }
+}
