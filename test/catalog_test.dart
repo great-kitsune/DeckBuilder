@@ -159,4 +159,49 @@ void main() {
       expect(db.search(Filters()), hasLength(2));
     },
   );
+  test(
+    'indexes the back of a flip card with every distinct printing',
+    () async {
+      final front = card(
+        'front',
+        'Front',
+        prints: [
+          for (final set in ['A', 'B'])
+            {
+              ...edition('front-$set', set, '1', 1),
+              'other_orientations': [
+                {
+                  ...card('back', 'Back'),
+                  'edition': edition('back-$set', set, '1', 2),
+                },
+              ],
+            },
+        ],
+      );
+      final api = OfficialApi(
+        MockClient(
+          (req) async => http.Response(
+            jsonEncode(switch (req.url.path) {
+              '/cards/all' => [
+                {'uuid': 'front', 'slug': 'front'},
+                {'uuid': 'back', 'slug': 'back'},
+              ],
+              '/cards/search' => {
+                'total_pages': 1,
+                'page': 1,
+                'data': [front],
+              },
+              _ => throw StateError('no separate network request needed'),
+            }),
+            200,
+          ),
+        ),
+      );
+      await collect(db, api, (_) {});
+      final f = Filters()
+        ..text = 'back'
+        ..editions = true;
+      expect(db.search(f).map((r) => r['set_code']).toSet(), {'A', 'B'});
+    },
+  );
 }

@@ -57,6 +57,21 @@ Future<void> collect(
     missing.remove(id);
   }
 
+  // Search groups a flip card under its front. One back can have multiple prints.
+  final faces = <String, Json>{};
+  final facePrints = <String, Map<String, Json>>{};
+  void collectFaces(Json front) {
+    for (final printing in front['editions'] as List) {
+      for (final raw in printing['other_orientations'] as List? ?? []) {
+        final face = Json.of(raw as Json);
+        final id = face['uuid'] as String;
+        final edition = face.remove('edition') as Json;
+        faces[id] = face..remove('edition_id');
+        (facePrints[id] ??= {})[edition['uuid'] as String] = edition;
+      }
+    }
+  }
+
   int? totalPages;
   for (var page = 1; ; page++) {
     final result =
@@ -77,6 +92,7 @@ Future<void> collect(
     stage.transaction(() {
       for (final c in rows.cast<Json>()) {
         insert(c);
+        collectFaces(c);
       }
     });
     report('$page / $totalPages 페이지 · ${seen.length} / ${index.length}장');
@@ -84,11 +100,25 @@ Future<void> collect(
   }
   // /cards/all can include cards that the paginated search has not indexed yet.
   for (final entry in missing.entries.toList()) {
-    final c = await api.read('/cards/${entry.value}') as Json;
-    if (c['uuid'] != entry.key) {
-      throw const FormatException('개별 카드 식별자가 일치하지 않습니다.');
+    Json? card;
+    if (!faces.containsKey(entry.key)) {
+      final detail = await api.read('/cards/${entry.value}') as Json;
+      if (detail['uuid'] == entry.key) {
+        card = detail;
+      } else {
+        collectFaces(detail);
+      }
     }
-    stage.transaction(() => insert(c));
+    card ??= faces[entry.key];
+    if (card == null) {
+      throw FormatException('개별 카드 식별자가 일치하지 않습니다: ${entry.value}');
+    }
+    final complete = <String, dynamic>{
+      ...card,
+      if (facePrints.containsKey(entry.key))
+        'editions': facePrints[entry.key]!.values.toList(),
+    };
+    stage.transaction(() => insert(complete));
     report('인덱스 대조 · ${seen.length} / ${index.length}장');
   }
 }
