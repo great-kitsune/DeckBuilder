@@ -361,49 +361,59 @@ class CardDetail extends StatelessWidget {
       );
     }
 
+    final mobile = switch (Theme.of(context).platform) {
+      TargetPlatform.android || TargetPlatform.iOS => true,
+      _ => false,
+    };
     return Scaffold(
       appBar: AppBar(title: Text(c['name'] as String)),
-      body: ListView(
-        padding: const EdgeInsets.all(16),
-        children: [
-          if (prints.isNotEmpty) editionPanel(prints.first, true),
-          if (row['spoiler'] == 1) const Text('스포일러 · 공식 등록 전'),
-          if (c['english_name']?.isNotEmpty == true)
-            Text(c['english_name'] as String),
-          if (photo != null)
-            Image.memory(
-              photo,
-              height: 260,
-              errorBuilder: (_, _, _) => const Text('이미지를 열 수 없습니다.'),
-            ),
-          for (final (label, k) in [
-            ('Type', 'types'),
-            ('Subtype', 'subtypes'),
-            ('Class', 'classes'),
-            ('Element', 'elements'),
-          ])
-            Text('$label · ${(c[k] as List? ?? []).join(', ')}'),
-          Text(
-            '비용 · ${c['cost']?['type'] ?? '—'} ${c['cost']?['value'] ?? ''}',
-          ),
-          for (final k in ['level', 'life', 'power', 'durability'])
-            if (c[k] != null) Text('$k · ${c[k]}'),
-          const Divider(),
-          SelectableText.rich(effectSpan(c)),
-          for (final rule in c['rule'] as List? ?? [])
-            Text('${rule['title'] ?? ''} ${rule['description'] ?? ''}'),
-          for (final r in prints.skip(1)) editionPanel(r, false),
-          for (final candidate in candidates)
-            TextButton(
-              onPressed: () {
-                catalog.transaction(() => catalog.resolve(id, candidate));
-                Navigator.pop(context);
-              },
-              child: Text(
-                "이 공식 카드로 교체 · ${catalog.db.select('SELECT name FROM cards WHERE id=?', [candidate]).single['name']}",
+      body: SafeArea(
+        top: false,
+        minimum: EdgeInsets.only(
+          bottom: mobile ? MediaQuery.sizeOf(context).height * 0.1 : 0,
+        ),
+        child: ListView(
+          padding: const EdgeInsets.all(16),
+          children: [
+            if (prints.isNotEmpty) editionPanel(prints.first, true),
+            if (row['spoiler'] == 1) const Text('스포일러 · 공식 등록 전'),
+            if (c['english_name']?.isNotEmpty == true)
+              Text(c['english_name'] as String),
+            if (photo != null)
+              Image.memory(
+                photo,
+                height: 260,
+                errorBuilder: (_, _, _) => const Text('이미지를 열 수 없습니다.'),
               ),
+            for (final (label, k) in [
+              ('Type', 'types'),
+              ('Subtype', 'subtypes'),
+              ('Class', 'classes'),
+              ('Element', 'elements'),
+            ])
+              Text('$label · ${(c[k] as List? ?? []).join(', ')}'),
+            Text(
+              '비용 · ${c['cost']?['type'] ?? '—'} ${c['cost']?['value'] ?? ''}',
             ),
-        ],
+            for (final k in ['level', 'life', 'power', 'durability'])
+              if (c[k] != null) Text('$k · ${c[k]}'),
+            const Divider(),
+            SelectableText.rich(effectSpan(c)),
+            for (final rule in c['rule'] as List? ?? [])
+              Text('${rule['title'] ?? ''} ${rule['description'] ?? ''}'),
+            for (final r in prints.skip(1)) editionPanel(r, false),
+            for (final candidate in candidates)
+              TextButton(
+                onPressed: () {
+                  catalog.transaction(() => catalog.resolve(id, candidate));
+                  Navigator.pop(context);
+                },
+                child: Text(
+                  "이 공식 카드로 교체 · ${catalog.db.select('SELECT name FROM cards WHERE id=?', [candidate]).single['name']}",
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
