@@ -147,7 +147,9 @@ class Catalog {
   void setMetadata(String key, String value) =>
       db.execute('INSERT OR REPLACE INTO metadata VALUES(?,?)', [key, value]);
   String? get updated => metadata('updated');
-  bool get wifiOnly => metadata('wifiOnly') == '1';
+  bool get useOfflineImages => metadata('imageMode') == 'full';
+  bool get imagesComplete =>
+      updated != null && metadata('offlineImagesFor') == updated;
   bool get thumbnailGrid => metadata('thumbnailGrid') == '1';
 
   Map<String, List<String>> options() {

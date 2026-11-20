@@ -1,8 +1,6 @@
 import 'dart:io';
-import 'package:crypto/crypto.dart';
-import 'dart:convert';
+import 'offline_images.dart';
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 import 'package:path_provider/path_provider.dart';
 
 Future<Directory> imageDirectory() async =>
@@ -26,11 +24,12 @@ Future<void> clearCardImages() async {
 
 class EditionImage extends StatefulWidget {
   final String path, version;
-  final bool thumbnail;
+  final bool thumbnail, useOffline;
   const EditionImage(
     this.path,
     this.version, {
     this.thumbnail = false,
+    required this.useOffline,
     super.key,
   });
   @override
@@ -38,56 +37,69 @@ class EditionImage extends StatefulWidget {
 }
 
 class _EditionImageState extends State<EditionImage> {
-  late Future<File> image = load();
-  Future<File> load() async {
-    final path = widget.path;
-    final key = sha256.convert(utf8.encode('$path|${widget.version}'));
-    final dir = await imageDirectory();
-    final cached = File('${dir.path}/$key');
-    if (await cached.exists()) return cached;
-    final response = await http
-        .get(Uri.https('api.gatcg.com', path))
-        .timeout(const Duration(seconds: 30));
-    if (response.statusCode != 200) {
-      throw HttpException('HTTP ${response.statusCode}');
-    }
-    await dir.create(recursive: true);
-    final temp = File(
-      '${cached.path}.${DateTime.now().microsecondsSinceEpoch}.tmp',
-    );
-    try {
-      await temp.writeAsBytes(response.bodyBytes);
-      return await temp.rename(cached.path);
-    } finally {
-      if (await temp.exists()) await temp.delete();
+  late Future<File?> installed = findInstalled();
+  int attempt = 0;
+
+  @override
+  void didUpdateWidget(EditionImage old) {
+    super.didUpdateWidget(old);
+    if (widget.path != old.path ||
+        widget.version != old.version ||
+        widget.useOffline != old.useOffline) {
+      installed = findInstalled();
     }
   }
 
-  @override
-  Widget build(BuildContext context) => FutureBuilder<File>(
-    future: image,
-    builder: (context, snap) {
-      if (snap.hasError) {
-        if (widget.thumbnail) {
-          return const Icon(Icons.image_not_supported_outlined);
-        }
-        return TextButton(
-          onPressed: () => setState(() => image = load()),
-          child: const Text('이미지 다시 불러오기'),
-        );
-      }
-      if (!snap.hasData) {
-        return const SizedBox(
-          height: 60,
-          child: Center(child: CircularProgressIndicator()),
-        );
-      }
-      return Image.file(
-        snap.data!,
-        height: widget.thumbnail ? null : 260,
-        cacheWidth: widget.thumbnail ? 260 : null,
-        errorBuilder: (_, _, _) => const Text('이미지를 읽을 수 없습니다.'),
-      );
-    },
+  Future<File?> findInstalled() async {
+    if (!widget.useOffline) return null;
+    final path = widget.path, version = widget.version;
+    final directory = offlineImageDirectory(
+      await getApplicationSupportDirectory(),
+    );
+    final file = imageFile(directory, path, version);
+    return await file.exists() ? file : null;
+  }
+
+  Widget remoteImage() => Image.network(
+    Uri.https(
+      'api.gatcg.com',
+      widget.path,
+      widget.version.isEmpty ? null : {'v': widget.version},
+    ).toString(),
+    key: ValueKey(attempt),
+    height: widget.thumbnail ? null : 260,
+    cacheWidth: widget.thumbnail ? 260 : null,
+    errorBuilder: (_, _, _) => widget.thumbnail
+        ? const Icon(Icons.image_not_supported_outlined)
+        : TextButton(
+            onPressed: () => setState(() {
+              attempt++;
+              installed = findInstalled();
+            }),
+            child: const Text('이미지 다시 불러오기'),
+          ),
   );
+
+  @override
+  Widget build(BuildContext context) {
+    if (!widget.useOffline) return remoteImage();
+    return FutureBuilder<File?>(
+      future: installed,
+      builder: (context, snap) {
+        if (snap.connectionState != ConnectionState.done) {
+          return const SizedBox(
+            height: 60,
+            child: Center(child: CircularProgressIndicator()),
+          );
+        }
+        if (snap.data == null) return remoteImage();
+        return Image.file(
+          snap.data!,
+          height: widget.thumbnail ? null : 260,
+          cacheWidth: widget.thumbnail ? 260 : null,
+          errorBuilder: (_, _, _) => remoteImage(),
+        );
+      },
+    );
+  }
 }

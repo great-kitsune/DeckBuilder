@@ -1,61 +1,12 @@
 import 'dart:io';
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:deck_builder/catalog.dart';
-import 'package:deck_builder/catalog_job.dart';
 import 'package:deck_builder/effect_text.dart';
 import 'package:deck_builder/search_view.dart';
-import 'package:deck_builder/sync.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
-import 'package:http/http.dart' as http;
-import 'package:http/testing.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 
 void main() {
-  test(
-    'Wi-Fi only blocks unavailable and mixed transports before any request',
-    () async {
-      for (final routes in <List<ConnectivityResult>>[
-        [],
-        [ConnectivityResult.mobile],
-        [ConnectivityResult.wifi, ConnectivityResult.ethernet],
-      ]) {
-        expect(hasWifiOnlyRoute(routes), isFalse);
-      }
-      expect(hasWifiOnlyRoute([ConnectivityResult.wifi]), isTrue);
-      final api = OfficialApi(
-        MockClient((_) => throw StateError('unexpected network request')),
-        networkAllowed: () async => false,
-      );
-      await expectLater(api.read('/cards/all'), throwsA(isA<WifiRequired>()));
-    },
-  );
-
-  test('losing Wi-Fi aborts an in-flight response without retrying', () async {
-    var attempts = 0, allowed = true;
-    final client = MockClient.streaming((request, body) async {
-      attempts++;
-      allowed = false;
-      final aborted = (request as http.AbortableRequest).abortTrigger!;
-      return http.StreamedResponse(
-        Stream.fromFuture(
-          aborted.then<List<int>>((_) {
-            throw http.RequestAbortedException(request.url);
-          }),
-        ),
-        200,
-      );
-    });
-    await expectLater(
-      OfficialApi(
-        client,
-        networkAllowed: () async => allowed,
-      ).read('/cards/all'),
-      throwsA(isA<WifiRequired>()),
-    );
-    expect(attempts, 1);
-  });
-
   test('preferences survive reopening and legacy editions retain input order', () {
     final directory = Directory.systemTemp.createTempSync();
     addTearDown(() => directory.deleteSync(recursive: true));
@@ -75,15 +26,12 @@ void main() {
           .map((r) => r['id']),
       ['z', 'a'],
     );
-    expect(first.wifiOnly, false);
     expect(first.thumbnailGrid, false);
     first.setMetadata('thumbnailGrid', '1');
-    first.setMetadata('wifiOnly', '1');
     first.db.close();
     final reopened = Catalog(sqlite3.open(path));
     addTearDown(reopened.db.close);
     expect(reopened.thumbnailGrid, true);
-    expect(reopened.wifiOnly, true);
   });
 
   test(
