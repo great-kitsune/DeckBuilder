@@ -26,7 +26,13 @@ Future<void> clearCardImages() async {
 
 class EditionImage extends StatefulWidget {
   final String path, version;
-  const EditionImage(this.path, this.version, {super.key});
+  final bool thumbnail;
+  const EditionImage(
+    this.path,
+    this.version, {
+    this.thumbnail = false,
+    super.key,
+  });
   @override
   State<EditionImage> createState() => _EditionImageState();
 }
@@ -34,12 +40,13 @@ class EditionImage extends StatefulWidget {
 class _EditionImageState extends State<EditionImage> {
   late Future<File> image = load();
   Future<File> load() async {
+    final path = widget.path;
+    final key = sha256.convert(utf8.encode('$path|${widget.version}'));
     final dir = await imageDirectory();
-    final key = sha256.convert(utf8.encode('${widget.path}|${widget.version}'));
     final cached = File('${dir.path}/$key');
     if (await cached.exists()) return cached;
     final response = await http
-        .get(Uri.https('api.gatcg.com', widget.path))
+        .get(Uri.https('api.gatcg.com', path))
         .timeout(const Duration(seconds: 30));
     if (response.statusCode != 200) {
       throw HttpException('HTTP ${response.statusCode}');
@@ -61,6 +68,9 @@ class _EditionImageState extends State<EditionImage> {
     future: image,
     builder: (context, snap) {
       if (snap.hasError) {
+        if (widget.thumbnail) {
+          return const Icon(Icons.image_not_supported_outlined);
+        }
         return TextButton(
           onPressed: () => setState(() => image = load()),
           child: const Text('이미지 다시 불러오기'),
@@ -74,7 +84,8 @@ class _EditionImageState extends State<EditionImage> {
       }
       return Image.file(
         snap.data!,
-        height: 260,
+        height: widget.thumbnail ? null : 260,
+        cacheWidth: widget.thumbnail ? 260 : null,
         errorBuilder: (_, _, _) => const Text('이미지를 읽을 수 없습니다.'),
       );
     },

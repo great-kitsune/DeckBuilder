@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:sqlite3/sqlite3.dart' as sql;
 import 'catalog.dart';
 import 'card_image.dart';
+import 'effect_text.dart';
 
 class SearchView extends StatefulWidget {
   final Catalog catalog;
@@ -213,38 +214,22 @@ class _SearchViewState extends State<SearchView> {
                 Expanded(
                   child: rows.isEmpty
                       ? const Center(child: Text('검색 결과가 없습니다.'))
+                      : widget.catalog.thumbnailGrid
+                      ? GridView.builder(
+                          padding: const EdgeInsets.all(8),
+                          gridDelegate:
+                              const SliverGridDelegateWithMaxCrossAxisExtent(
+                                maxCrossAxisExtent: 170,
+                                mainAxisExtent: 210,
+                                crossAxisSpacing: 8,
+                                mainAxisSpacing: 8,
+                              ),
+                          itemCount: rows.length,
+                          itemBuilder: (_, i) => resultTile(rows[i], true),
+                        )
                       : ListView.builder(
                           itemCount: rows.length,
-                          itemBuilder: (ctx, i) {
-                            final r = rows[i];
-                            return ListTile(
-                              title: Text(r['name'] as String),
-                              subtitle: r['edition'] == null
-                                  ? null
-                                  : Text(
-                                      [
-                                        r['set_code'],
-                                        r['rarity'],
-                                      ].nonNulls.join(' · '),
-                                    ),
-                              trailing: r['spoiler'] == 1
-                                  ? const Chip(label: Text('스포일러'))
-                                  : null,
-                              onTap: () async {
-                                await Navigator.push(
-                                  context,
-                                  MaterialPageRoute<void>(
-                                    builder: (_) => CardDetail(
-                                      widget.catalog,
-                                      r['id'] as String,
-                                      r['edition'] as String?,
-                                    ),
-                                  ),
-                                );
-                                if (mounted) setState(refresh);
-                              },
-                            );
-                          },
+                          itemBuilder: (_, i) => resultTile(rows[i], false),
                         ),
                 ),
               ],
@@ -254,6 +239,81 @@ class _SearchViewState extends State<SearchView> {
       );
     },
   );
+  Widget resultTile(sql.Row r, bool grid) {
+    final id = r['id'] as String;
+    final edition = r['edition'] as String?;
+    final name = r['name'] as String;
+    final spoiler = r['spoiler'] == 1;
+    final subtitle = edition == null
+        ? ''
+        : [r['set_code'], r['rarity']].nonNulls.join(' · ');
+    Future<void> open() async {
+      await Navigator.push(
+        context,
+        MaterialPageRoute<void>(
+          builder: (_) => CardDetail(widget.catalog, id, edition),
+        ),
+      );
+      if (mounted) setState(refresh);
+    }
+
+    if (!grid) {
+      return ListTile(
+        title: Text(name),
+        subtitle: subtitle.isEmpty ? null : Text(subtitle),
+        trailing: spoiler ? const Chip(label: Text('스포일러')) : null,
+        onTap: open,
+      );
+    }
+    final catalog = widget.catalog;
+    final local = spoiler
+        ? catalog.db.select('SELECT photo FROM cards WHERE id=?', [
+                id,
+              ]).single['photo']
+              as Uint8List?
+        : null;
+    final print = catalog.db
+        .select(
+          """SELECT json_extract(payload,'\$.image') image,
+      json_extract(payload,'\$.last_update') version FROM editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
+          [id, edition, edition],
+        )
+        .firstOrNull;
+    final path = print?['image'] as String?;
+    const fallback = Icon(Icons.image_outlined);
+    final image = local != null
+        ? Image.memory(
+            local,
+            cacheWidth: 260,
+            errorBuilder: (_, _, _) => fallback,
+          )
+        : path != null && path.startsWith('/cards/images/')
+        ? EditionImage(
+            path,
+            print?['version']?.toString() ?? '',
+            thumbnail: true,
+            key: ValueKey((path, print?['version'])),
+          )
+        : fallback;
+    return Card(
+      clipBehavior: Clip.antiAlias,
+      child: InkWell(
+        onTap: open,
+        child: Padding(
+          padding: const EdgeInsets.all(6),
+          child: Column(
+            children: [
+              Expanded(child: Center(child: image)),
+              Text(name, maxLines: 2, overflow: TextOverflow.ellipsis),
+              if (subtitle.isNotEmpty)
+                Text(subtitle, maxLines: 1, overflow: TextOverflow.ellipsis),
+              if (spoiler) const Text('스포일러'),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 class CardDetail extends StatelessWidget {
@@ -269,17 +329,40 @@ class CardDetail extends StatelessWidget {
     final c = jsonDecode(row['payload'] as String) as Json;
     final photo = row['photo'] as Uint8List?;
     final prints = catalog.db.select(
-      'SELECT * FROM editions WHERE card=? ORDER BY id=? DESC,id',
-      [id, edition],
+      'SELECT * FROM editions WHERE card=? ORDER BY position,id',
+      [id],
     );
     final candidates = row['spoiler'] == 1
         ? catalog.candidates(id)
         : <String>[];
+    Widget editionPanel(sql.Row r, bool first) {
+      final e = jsonDecode(r['payload'] as String) as Json;
+      final path = e['image'] as String?;
+      return ExpansionTile(
+        title: Text(
+          "${e['set']?['name'] ?? r['set_code'] ?? '인쇄판'} #${r['number'] ?? '—'}",
+        ),
+        key: ValueKey(r['id']),
+        initiallyExpanded: first || edition == r['id'],
+        children: [
+          Text('희귀도 · ${r['rarity'] ?? '—'}'),
+          if (e['effect_raw'] != null) SelectableText.rich(effectSpan(e)),
+          if (path != null && path.startsWith('/cards/images/'))
+            EditionImage(
+              path,
+              e['last_update']?.toString() ?? '',
+              key: ValueKey((path, e['last_update'])),
+            ),
+        ],
+      );
+    }
+
     return Scaffold(
       appBar: AppBar(title: Text(c['name'] as String)),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
+          if (prints.isNotEmpty) editionPanel(prints.first, true),
           if (row['spoiler'] == 1) const Text('스포일러 · 공식 등록 전'),
           if (c['english_name']?.isNotEmpty == true)
             Text(c['english_name'] as String),
@@ -302,33 +385,10 @@ class CardDetail extends StatelessWidget {
           for (final k in ['level', 'life', 'power', 'durability'])
             if (c[k] != null) Text('$k · ${c[k]}'),
           const Divider(),
-          SelectableText(c['effect_raw'] as String? ?? ''),
+          SelectableText.rich(effectSpan(c)),
           for (final rule in c['rule'] as List? ?? [])
             Text('${rule['title'] ?? ''} ${rule['description'] ?? ''}'),
-          for (final r in prints)
-            Builder(
-              builder: (_) {
-                final e = jsonDecode(r['payload'] as String) as Json;
-                final path = e['image'] as String?;
-                return ExpansionTile(
-                  title: Text(
-                    "${e['set']?['name'] ?? r['set_code'] ?? '인쇄판'} #${r['number'] ?? '—'}",
-                  ),
-                  initiallyExpanded: edition == r['id'],
-                  children: [
-                    Text('희귀도 · ${r['rarity'] ?? '—'}'),
-                    if (e['effect_raw'] != null)
-                      SelectableText(e['effect_raw'] as String),
-                    if (path != null && path.startsWith('/cards/images/'))
-                      EditionImage(
-                        path,
-                        e['last_update']?.toString() ?? '',
-                        key: ValueKey((path, e['last_update'])),
-                      ),
-                  ],
-                );
-              },
-            ),
+          for (final r in prints.skip(1)) editionPanel(r, false),
           for (final candidate in candidates)
             TextButton(
               onPressed: () {
