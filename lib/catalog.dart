@@ -312,6 +312,38 @@ class Catalog {
     return matching.isEmpty ? named : matching;
   }
 
+  ({int decks, int copies}) spoilerUsage(String id) {
+    final row = db.select(
+      'SELECT count(DISTINCT deck) decks,coalesce(sum(quantity),0) copies FROM deck_entries WHERE card=?',
+      [id],
+    ).single;
+    return (decks: row['decks'] as int, copies: row['copies'] as int);
+  }
+
+  void deleteSpoiler(
+    String id, {
+    required ({int decks, int copies}) confirmedUsage,
+  }) {
+    transaction(() {
+      if (db
+          .select(
+            '''SELECT 1 FROM spoiler_cards WHERE id=? AND active IN (1,2)
+        AND NOT EXISTS (SELECT 1 FROM replacements WHERE local_id=?)''',
+            [id, id],
+          )
+          .isEmpty) {
+        throw StateError('이미 삭제되었거나 공식 카드로 교체된 카드입니다.');
+      }
+      if (spoilerUsage(id) != confirmedUsage) {
+        throw StateError('덱 구성이 변경되었습니다. 삭제할 내용을 다시 확인하세요.');
+      }
+      db.execute('DELETE FROM deck_entries WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_tags WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_editions WHERE card=?', [id]);
+      db.execute('DELETE FROM spoiler_cards WHERE id=?', [id]);
+    });
+  }
+
   void resolve(String localId, String officialId) {
     // A background install may have resolved a detail page that was left open.
     if (db.select('SELECT 1 FROM replacements WHERE local_id=?', [
