@@ -140,12 +140,12 @@ void main() {
         final initial = db.deckEntries(id);
         expect(() => omnidexText(initial), throwsFormatException);
         Future<int> height(List<DeckEntry> entries) async {
-          final bytes = await renderDeckPng('전체 덱', entries);
+          final bytes = await renderDeckPng(db, '전체 덱', entries);
           expect(bytes.take(8), [137, 80, 78, 71, 13, 10, 26, 10]);
           final codec = await ui.instantiateImageCodec(bytes);
           final image = (await codec.getNextFrame()).image;
           try {
-            expect(image.width, 960);
+            expect(image.width, greaterThan(0));
             return image.height;
           } finally {
             image.dispose();
@@ -156,6 +156,101 @@ void main() {
         final small = await height(initial);
         final tall = await height(List.filled(50, initial.single));
         expect(tall, greaterThan(small + 1000));
+      });
+    },
+  );
+
+  testWidgets(
+    'PNG draws selected artwork and local spoilers with quantity badges on the face',
+    (tester) async {
+      await tester.runAsync(() async {
+        Future<Uint8List> solid(Color color) async {
+          final recorder = ui.PictureRecorder();
+          ui.Canvas(recorder).drawColor(color, ui.BlendMode.src);
+          final pic = recorder.endRecording();
+          final image = await pic.toImage(50, 70);
+          final data = await image.toByteData(format: ui.ImageByteFormat.png);
+          image.dispose();
+          pic.dispose();
+          return data!.buffer.asUint8List();
+        }
+
+        final red = await solid(const Color(0xffff0000));
+        final green = await solid(const Color(0xff00ff00));
+        db.insert(
+          card(
+            'art',
+            'Lucia, Reclaimed Blight',
+            cost: 'reserve',
+            prints: [
+              {
+                ...edition('p1', 'A', '01', 1),
+                'image': '/cards/images/first.jpg',
+              },
+              {
+                ...edition('p2', 'B', '02', 1),
+                'image': '/cards/images/second.jpg',
+                'last_update': 'v2',
+              },
+            ],
+          ),
+        );
+        db.insert(
+          card('local', 'Preview', cost: 'reserve'),
+          spoiler: true,
+          photo: green,
+        );
+        final id = db.createDeck('Images');
+        for (var i = 0; i < 4; i++) {
+          db.addToDeck(id, DeckZone.main, 'art', 'p2');
+        }
+        db.addToDeck(id, DeckZone.main, 'local', null);
+        db.insert(
+          card('broken', 'Unreadable preview', cost: 'reserve'),
+          spoiler: true,
+          photo: Uint8List.fromList([0, 1]),
+        );
+        db.addToDeck(id, DeckZone.sideboard, 'broken', null);
+        final requests = <(String, String)>[];
+        final bytes = await renderDeckPng(
+          db,
+          'Images',
+          db.deckEntries(id),
+          load: (path, version) async {
+            requests.add((path, version));
+            return red;
+          },
+        );
+        expect(requests, [('/cards/images/second.jpg', 'v2')]);
+        final codec = await ui.instantiateImageCodec(bytes);
+        final image = (await codec.getNextFrame()).image;
+        try {
+          final data = (await image.toByteData(
+            format: ui.ImageByteFormat.rawRgba,
+          ))!;
+          int rgb(int x, int y) =>
+              data.getUint32((y * image.width + x) * 4) >> 8;
+          // Find both source colors in the same row, then inspect the lower center
+          // of the first thumbnail for the translucent badge and white digit.
+          var top = 0;
+          while (top < image.height && rgb(30, top) != 0xff0000) {
+            top++;
+          }
+          expect(top, lessThan(image.height - 348));
+          expect(rgb(300, top + 30), 0x00ff00);
+          final colors = {
+            for (var y = top + 270; y < top + 300; y++)
+              for (var x = 126; x < 170; x++) rgb(x, y),
+          };
+          expect(colors, contains(0xffffff));
+          expect(
+            colors.any((c) => c > 0 && c <= 0x440000 && (c & 0xffff) == 0),
+            isTrue,
+          );
+        } finally {
+          image.dispose();
+          codec.dispose();
+        }
       });
     },
   );

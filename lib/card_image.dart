@@ -191,6 +191,44 @@ class _EditionImageState extends State<EditionImage> {
   );
 }
 
+typedef CardArt = ({Uint8List? local, String? path, String version});
+
+CardArt catalogArt(
+  Catalog catalog,
+  String id,
+  String? edition, {
+  required bool spoiler,
+}) {
+  final local = spoiler
+      ? (catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
+              id,
+            ]).firstOrNull?['photo']
+            as Uint8List?)
+      : null;
+  var print = catalog.db
+      .select(
+        """SELECT json_extract(payload,'\$.image') image,
+      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position,id LIMIT 1""",
+        [id, edition, edition],
+      )
+      .firstOrNull;
+  if (print == null && edition != null) {
+    print = catalog.db
+        .select(
+          """SELECT json_extract(payload,'\$.image') image,
+        json_extract(payload,'\$.last_update') version FROM retired_editions WHERE card=? AND id=?""",
+          [id, edition],
+        )
+        .firstOrNull;
+  }
+  final path = print?['image'] as String?;
+  return (
+    local: local,
+    path: path != null && path.startsWith('/cards/images/') ? path : null,
+    version: print?['version']?.toString() ?? '',
+  );
+}
+
 class CatalogThumbnail extends StatelessWidget {
   final Catalog catalog;
   final String id;
@@ -208,20 +246,12 @@ class CatalogThumbnail extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final local = spoiler
-        ? (catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
-                id,
-              ]).firstOrNull?['photo']
-              as Uint8List?)
-        : null;
-    final print = catalog.db
-        .select(
-          """SELECT json_extract(payload,'\$.image') image,
-      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
-          [id, edition, edition],
-        )
-        .firstOrNull;
-    final path = print?['image'] as String?;
+    final (:local, :path, :version) = catalogArt(
+      catalog,
+      id,
+      edition,
+      spoiler: spoiler,
+    );
     const fallback = Icon(Icons.image_outlined);
     return local != null
         ? Image.memory(
@@ -229,12 +259,12 @@ class CatalogThumbnail extends StatelessWidget {
             cacheWidth: 260,
             errorBuilder: (_, _, _) => fallback,
           )
-        : path != null && path.startsWith('/cards/images/')
+        : path != null
         ? EditionImage(
             path,
-            print?['version']?.toString() ?? '',
+            version,
             thumbnail: true,
-            key: ValueKey((path, print?['version'], revision)),
+            key: ValueKey((path, version, revision)),
           )
         : fallback;
   }
