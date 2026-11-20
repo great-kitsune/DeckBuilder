@@ -19,14 +19,17 @@ class DeckExportMenu extends StatefulWidget {
 }
 
 class _DeckExportMenuState extends State<DeckExportMenu> {
-  bool busy = false;
+  _DeckAction? active;
 
   Future<void> act(_DeckAction action) async {
-    setState(() => busy = true);
+    setState(() => active = action);
     try {
       final entries = widget.catalog.deckEntries(widget.deck.id);
       if (action == _DeckAction.png) {
-        if (await saveDeckPng(widget.deck.name, entries) && mounted) {
+        final name = widget.deck.name;
+        final bytes = await renderDeckPng(widget.catalog, name, entries);
+        if (!mounted || ModalRoute.of(context)?.isCurrent == false) return;
+        if (await saveDeckPng(name, bytes) && mounted) {
           ScaffoldMessenger.of(
             context,
           ).showSnackBar(const SnackBar(content: Text('PNG를 저장했습니다.')));
@@ -131,14 +134,23 @@ class _DeckExportMenuState extends State<DeckExportMenu> {
         );
       }
     } finally {
-      if (mounted) setState(() => busy = false);
+      if (mounted) setState(() => active = null);
     }
   }
 
   @override
   Widget build(BuildContext context) => PopupMenuButton<_DeckAction>(
     tooltip: '덱 출력 및 검증',
-    enabled: !busy,
+    enabled: active == null,
+    icon: active == _DeckAction.png
+        ? const SizedBox.square(
+            dimension: 20,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              semanticsLabel: "덱 이미지 준비 중",
+            ),
+          )
+        : null,
     onSelected: act,
     itemBuilder: (_) => const [
       PopupMenuItem(value: _DeckAction.png, child: Text('덱 리스트 PNG 저장')),
