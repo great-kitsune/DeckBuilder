@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/foundation.dart' show ValueListenable;
 import 'catalog.dart';
 import 'card_image.dart';
+import 'deck_exchange_view.dart';
 import 'search_view.dart';
 
 Future<String?> _deckName(
@@ -132,10 +133,31 @@ class _DeckListState extends State<DeckList> {
           alignment: Alignment.centerRight,
           child: Padding(
             padding: const EdgeInsets.all(12),
-            child: FilledButton.icon(
-              onPressed: create,
-              icon: const Icon(Icons.add),
-              label: const Text('새 덱'),
+            child: Wrap(
+              spacing: 8,
+              children: [
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final deck = await Navigator.push<DeckInfo>(
+                      context,
+                      MaterialPageRoute(
+                        builder: (_) => ImportDeckView(widget.catalog),
+                      ),
+                    );
+                    if (deck != null && mounted) {
+                      setState(() {});
+                      await open(deck);
+                    }
+                  },
+                  icon: const Icon(Icons.file_open_outlined),
+                  label: const Text('레시피 불러오기'),
+                ),
+                FilledButton.icon(
+                  onPressed: create,
+                  icon: const Icon(Icons.add),
+                  label: const Text('새 덱'),
+                ),
+              ],
             ),
           ),
         ),
@@ -464,6 +486,9 @@ class _DeckEditorState extends State<DeckEditor> {
           title: Text(
             showPicker ? '카드 추가 · ${widget.deck.name}' : widget.deck.name,
           ),
+          actions: [
+            if (!showPicker) DeckExportMenu(widget.catalog, widget.deck),
+          ],
           leading: showPicker
               ? IconButton(
                   icon: const BackButtonIcon(),

@@ -67,6 +67,7 @@ typedef DeckEntry = ({
   DeckCost cost,
   bool spoiler,
   String name,
+  String officialName,
   String printing,
   String? status,
 });
@@ -105,7 +106,7 @@ extension DeckStorage on Catalog {
   List<DeckEntry> deckEntries(int deck) {
     final rows = db.select(
       '''
-      SELECT d.*,COALESCE(c.name,s.name,d.card) name,COALESCE(s.spoiler,0) spoiler,
+      SELECT d.*,json_extract(c.payload,'\$.english_name') english_name,COALESCE(c.name,s.name,d.card) name,COALESCE(s.spoiler,0) spoiler,
         json_extract(COALESCE(c.payload,s.payload),'\$.cost.type') cost_type,
         COALESCE(c.active,s.active,0) active,COALESCE(e.id,se.id) current_print,
         COALESCE(e.set_code,se.set_code,json_extract(r.payload,'\$.set.prefix')) set_code,
@@ -131,6 +132,10 @@ extension DeckStorage on Catalog {
           cost: DeckCost.parse(r['cost_type']),
           spoiler: r['spoiler'] == 1,
           name: r['name'] as String,
+          officialName:
+              (r['english_name'] as String?)?.trim().isNotEmpty == true
+              ? (r['english_name'] as String).trim()
+              : r['name'] as String,
           printing: [
             r['set_code'],
             if (r['number'] != null) '#${r['number']}',
