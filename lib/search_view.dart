@@ -1,0 +1,346 @@
+import 'dart:convert';
+import 'dart:typed_data';
+import 'package:flutter/material.dart';
+import 'package:sqlite3/sqlite3.dart' as sql;
+import 'catalog.dart';
+import 'card_image.dart';
+
+class SearchView extends StatefulWidget {
+  final Catalog catalog;
+  final int revision;
+  final VoidCallback onAdd;
+  const SearchView(
+    this.catalog, {
+    required this.revision,
+    required this.onAdd,
+    super.key,
+  });
+  @override
+  State<SearchView> createState() => _SearchViewState();
+}
+
+class _SearchViewState extends State<SearchView> {
+  Filters filters = Filters();
+  final query = TextEditingController();
+  late List<sql.Row> rows;
+  late Map<String, List<String>> options;
+  @override
+  void initState() {
+    super.initState();
+    refresh();
+  }
+
+  void refresh() {
+    options = widget.catalog.options();
+    rows = widget.catalog.search(filters);
+  }
+
+  void search() => setState(() => rows = widget.catalog.search(filters));
+  @override
+  void didUpdateWidget(SearchView old) {
+    super.didUpdateWidget(old);
+    if (widget.revision != old.revision) refresh();
+  }
+
+  @override
+  void dispose() {
+    query.dispose();
+    super.dispose();
+  }
+
+  Widget filterPanel(void Function(VoidCallback) redraw) {
+    void change(VoidCallback mutate) {
+      mutate();
+      search();
+      redraw(() {});
+    }
+
+    return ListView(
+      padding: const EdgeInsets.all(12),
+      children: [
+        Row(
+          children: [
+            const Expanded(child: Text('검색 필터')),
+            TextButton(
+              onPressed: () => change(() {
+                filters = Filters();
+                query.clear();
+              }),
+              child: const Text('초기화'),
+            ),
+          ],
+        ),
+        for (final group in facets)
+          ExpansionTile(
+            title: Text(group),
+            subtitle: Text(
+              '${filters.all.contains(group) ? 'AND' : 'OR'} · ${filters.selected[group]?.length ?? 0}개 선택',
+            ),
+            children: [
+              SegmentedButton<bool>(
+                segments: const [
+                  ButtonSegment(value: false, label: Text('OR')),
+                  ButtonSegment(value: true, label: Text('AND')),
+                ],
+                selected: {filters.all.contains(group)},
+                onSelectionChanged: (v) => change(() {
+                  if (v.single) {
+                    filters.all.add(group);
+                  } else {
+                    filters.all.remove(group);
+                  }
+                }),
+              ),
+              Wrap(
+                spacing: 4,
+                children: [
+                  for (final v in options[group]!)
+                    FilterChip(
+                      label: Text(v),
+                      selected: filters.selected[group]?.contains(v) ?? false,
+                      onSelected: (on) => change(() {
+                        final set = filters.selected.putIfAbsent(
+                          group,
+                          () => {},
+                        );
+                        if (on) {
+                          set.add(v);
+                        } else {
+                          set.remove(v);
+                        }
+                      }),
+                    ),
+                ],
+              ),
+            ],
+          ),
+        DropdownButtonFormField(
+          key: ObjectKey(filters),
+          initialValue: filters.costType,
+          decoration: const InputDecoration(labelText: '비용 종류'),
+          items: [
+            for (final v in ['', 'memory', 'reserve', 'none'])
+              DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
+          ],
+          onChanged: (v) => change(() => filters.costType = v!),
+        ),
+        for (final (label, value, assign)
+            in <(String, int?, void Function(int?))>[
+              ('최소 비용', filters.minCost, (v) => filters.minCost = v),
+              ('최대 비용', filters.maxCost, (v) => filters.maxCost = v),
+              ('최소 레벨', filters.minLevel, (v) => filters.minLevel = v),
+              ('최대 레벨', filters.maxLevel, (v) => filters.maxLevel = v),
+            ])
+          TextFormField(
+            key: ValueKey((filters, label)),
+            initialValue: value?.toString(),
+            keyboardType: TextInputType.number,
+            decoration: InputDecoration(labelText: label),
+            onChanged: (s) => change(() => assign(int.tryParse(s))),
+          ),
+        DropdownButtonFormField(
+          key: ValueKey((filters, 'legality')),
+          initialValue: filters.legality,
+          decoration: const InputDecoration(labelText: 'Standard 사용 제한'),
+          items: [
+            for (final v in ['', '제한 없음', '제한'])
+              DropdownMenuItem(value: v, child: Text(v.isEmpty ? '전체' : v)),
+          ],
+          onChanged: (v) => change(() => filters.legality = v!),
+        ),
+        SwitchListTile(
+          title: const Text('에디션별 보기'),
+          value: filters.editions,
+          onChanged: (v) => change(() => filters.editions = v),
+        ),
+      ],
+    );
+  }
+
+  @override
+  Widget build(BuildContext context) => LayoutBuilder(
+    builder: (ctx, size) {
+      final wide = size.maxWidth >= 720;
+      return Row(
+        children: [
+          if (wide) SizedBox(width: 250, child: filterPanel((_) {})),
+          Expanded(
+            child: Column(
+              children: [
+                Padding(
+                  padding: const EdgeInsets.all(8),
+                  child: TextField(
+                    controller: query,
+                    decoration: const InputDecoration(
+                      prefixIcon: Icon(Icons.search),
+                      labelText: '카드명 · 효과 · 키워드',
+                    ),
+                    onChanged: (s) {
+                      filters.text = s;
+                      search();
+                    },
+                  ),
+                ),
+                Wrap(
+                  crossAxisAlignment: WrapCrossAlignment.center,
+                  spacing: 12,
+                  children: [
+                    Text('${rows.length}건'),
+                    if (!wide)
+                      TextButton.icon(
+                        icon: const Icon(Icons.tune),
+                        label: const Text('필터'),
+                        onPressed: () => showModalBottomSheet<void>(
+                          context: context,
+                          isScrollControlled: true,
+                          builder: (_) => FractionallySizedBox(
+                            heightFactor: .85,
+                            child: SafeArea(
+                              child: StatefulBuilder(
+                                builder: (_, setModal) => filterPanel(setModal),
+                              ),
+                            ),
+                          ),
+                        ),
+                      ),
+                    TextButton.icon(
+                      onPressed: widget.onAdd,
+                      icon: const Icon(Icons.add),
+                      label: const Text('스포일러 추가'),
+                    ),
+                  ],
+                ),
+                Expanded(
+                  child: rows.isEmpty
+                      ? const Center(child: Text('검색 결과가 없습니다.'))
+                      : ListView.builder(
+                          itemCount: rows.length,
+                          itemBuilder: (ctx, i) {
+                            final r = rows[i];
+                            return ListTile(
+                              title: Text(r['name'] as String),
+                              subtitle: r['edition'] == null
+                                  ? null
+                                  : Text(
+                                      [
+                                        r['set_code'],
+                                        r['rarity'],
+                                      ].nonNulls.join(' · '),
+                                    ),
+                              trailing: r['spoiler'] == 1
+                                  ? const Chip(label: Text('스포일러'))
+                                  : null,
+                              onTap: () async {
+                                await Navigator.push(
+                                  context,
+                                  MaterialPageRoute<void>(
+                                    builder: (_) => CardDetail(
+                                      widget.catalog,
+                                      r['id'] as String,
+                                      r['edition'] as String?,
+                                    ),
+                                  ),
+                                );
+                                if (mounted) setState(refresh);
+                              },
+                            );
+                          },
+                        ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    },
+  );
+}
+
+class CardDetail extends StatelessWidget {
+  final Catalog catalog;
+  final String id;
+  final String? edition;
+  const CardDetail(this.catalog, this.id, this.edition, {super.key});
+  @override
+  Widget build(BuildContext context) {
+    final row = catalog.db.select('SELECT * FROM cards WHERE id=?', [
+      id,
+    ]).single;
+    final c = jsonDecode(row['payload'] as String) as Json;
+    final photo = row['photo'] as Uint8List?;
+    final prints = catalog.db.select(
+      'SELECT * FROM editions WHERE card=? ORDER BY id=? DESC,id',
+      [id, edition],
+    );
+    final candidates = row['spoiler'] == 1
+        ? catalog.candidates(id)
+        : <String>[];
+    return Scaffold(
+      appBar: AppBar(title: Text(c['name'] as String)),
+      body: ListView(
+        padding: const EdgeInsets.all(16),
+        children: [
+          if (row['spoiler'] == 1) const Text('스포일러 · 공식 등록 전'),
+          if (c['english_name']?.isNotEmpty == true)
+            Text(c['english_name'] as String),
+          if (photo != null)
+            Image.memory(
+              photo,
+              height: 260,
+              errorBuilder: (_, _, _) => const Text('이미지를 열 수 없습니다.'),
+            ),
+          for (final (label, k) in [
+            ('Type', 'types'),
+            ('Subtype', 'subtypes'),
+            ('Class', 'classes'),
+            ('Element', 'elements'),
+          ])
+            Text('$label · ${(c[k] as List? ?? []).join(', ')}'),
+          Text(
+            '비용 · ${c['cost']?['type'] ?? '—'} ${c['cost']?['value'] ?? ''}',
+          ),
+          for (final k in ['level', 'life', 'power', 'durability'])
+            if (c[k] != null) Text('$k · ${c[k]}'),
+          const Divider(),
+          SelectableText(c['effect_raw'] as String? ?? ''),
+          for (final rule in c['rule'] as List? ?? [])
+            Text('${rule['title'] ?? ''} ${rule['description'] ?? ''}'),
+          for (final r in prints)
+            Builder(
+              builder: (_) {
+                final e = jsonDecode(r['payload'] as String) as Json;
+                final path = e['image'] as String?;
+                return ExpansionTile(
+                  title: Text(
+                    "${e['set']?['name'] ?? r['set_code'] ?? '인쇄판'} #${r['number'] ?? '—'}",
+                  ),
+                  initiallyExpanded: edition == r['id'],
+                  children: [
+                    Text('희귀도 · ${r['rarity'] ?? '—'}'),
+                    if (e['effect_raw'] != null)
+                      SelectableText(e['effect_raw'] as String),
+                    if (path != null && path.startsWith('/cards/images/'))
+                      EditionImage(
+                        path,
+                        e['last_update']?.toString() ?? '',
+                        key: ValueKey((path, e['last_update'])),
+                      ),
+                  ],
+                );
+              },
+            ),
+          for (final candidate in candidates)
+            TextButton(
+              onPressed: () {
+                catalog.transaction(() => catalog.resolve(id, candidate));
+                Navigator.pop(context);
+              },
+              child: Text(
+                "이 공식 카드로 교체 · ${catalog.db.select('SELECT name FROM cards WHERE id=?', [candidate]).single['name']}",
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
