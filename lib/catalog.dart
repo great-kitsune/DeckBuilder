@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:crypto/crypto.dart';
 
 part 'integrity.dart';
+part 'decks.dart';
 
 typedef Json = Map<String, dynamic>;
 const facets = [
@@ -55,6 +56,14 @@ class Catalog {
       ''');
     }
     db.execute('''
+      CREATE TABLE IF NOT EXISTS decks(id INTEGER PRIMARY KEY, name TEXT NOT NULL CHECK(length(trim(name))>0));
+      CREATE TABLE IF NOT EXISTS deck_entries(
+        deck INTEGER NOT NULL REFERENCES decks(id) ON DELETE CASCADE,
+        zone TEXT NOT NULL CHECK(zone IN ('material','main','sideboard')),
+        card TEXT NOT NULL, edition TEXT NOT NULL, quantity INTEGER NOT NULL CHECK(quantity>0),
+        PRIMARY KEY(deck,zone,card,edition)
+      );
+      CREATE INDEX IF NOT EXISTS deck_entries_by_card ON deck_entries(card);
       CREATE TABLE IF NOT EXISTS retired_editions(id TEXT PRIMARY KEY, card TEXT NOT NULL, payload TEXT NOT NULL);
       CREATE TABLE IF NOT EXISTS replacements(local_id TEXT PRIMARY KEY, official_id TEXT NOT NULL REFERENCES cards(id));
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -266,7 +275,7 @@ class Catalog {
       }
     }
     return db.select(
-      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
+      'SELECT c.id,c.name,c.spoiler,${f.editions ? 'e.id AS edition,e.set_code,e.number,e.rarity' : 'NULL AS edition'} FROM library_cards c ${f.editions ? 'LEFT JOIN library_editions e ON e.card=c.id' : ''} WHERE ${clauses.join(' AND ')} ORDER BY c.norm,c.id ${f.editions ? ',e.id' : ''}',
       args,
     );
   }
@@ -310,6 +319,7 @@ class Catalog {
     ]).isNotEmpty) {
       return;
     }
+    _replaceDeckCard(localId, officialId);
     db.execute('INSERT INTO replacements VALUES(?,?)', [localId, officialId]);
     db.execute('UPDATE spoiler_cards SET active=0 WHERE id=?', [localId]);
   }
