@@ -42,4 +42,4 @@ Android는 `flutter devices`에 표시된 기기 ID로 `flutter run -d <기기-I
 
 각 항목에서 수량을 조절하거나 **구역 이동**으로 일부 수량을 옮긴다. 편집 즉시 기기에 저장하며 덱 목록에서 이름 변경, 복제, 삭제가 가능하다. 카드 DB 재설치 후에도 덱을 유지한다. 스포일러가 공식 카드에 연결되면 수량과 구역을 보존하고, 후보가 여러 개면 덱의 해당 카드에서 후보를 확인할 수 있다.
 
-덱 안의 카드도 설정의 **카드 검색 표시 방식**을 따른다. Main Deck의 카드 추가 화면에는 Reserve, Material Deck에는 Memory 카드가 표시된다. 동명 카드는 인쇄판을 합산해 Reserve는 Main과 Sideboard에 총 4장, Memory는 Material과 Sideboard에 총 1장까지 담을 수 있다. Sideboard에는 Reserve 1장당 3점, Memory 1장당 1점으로 계산한 점수를 표시한다.
+덱 안의 카드도 설정의 **카드 검색 표시 방식**을 따른다. Main Deck의 카드 추가 화면에는 Reserve, Material Deck에는 Memory 카드가 표시된다. 동명 카드는 인쇄판을 합산해 Reserve는 Main과 Sideboard에 총 4장, Memory는 Material과 Sideboard에 총 1장까지 담을 수 있다. Sideboard에는 Reserve 1장당 1점, Memory 1장당 3점으로 계산한 점수를 표시한다.

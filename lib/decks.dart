@@ -10,8 +10,8 @@ enum DeckZone {
 }
 
 enum DeckCost {
-  reserve(DeckZone.main, 'Main', 4, 3),
-  memory(DeckZone.material, 'Material', 1, 1),
+  reserve(DeckZone.main, 'Main', 4, 1),
+  memory(DeckZone.material, 'Material', 1, 3),
   other(null, '', null, 0);
 
   final DeckZone? primary;

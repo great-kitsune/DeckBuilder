@@ -258,7 +258,9 @@ void main() {
       c.insert(card('a', 'Red Reserve', cost: 'reserve'));
       c.insert(card('b', 'Red Memory'));
       c.insert(card('c', 'Blue Reserve', cost: 'reserve'));
-      c.addToDeck(id, DeckZone.sideboard, 'a', null);
+      for (var i = 0; i < 2; i++) {
+        c.addToDeck(id, DeckZone.sideboard, 'a', null);
+      }
       c.addToDeck(id, DeckZone.sideboard, 'b', null);
       Future<void> pumpEditor(int revision) async {
         await tester.pumpWidget(
@@ -284,8 +286,9 @@ void main() {
       bool canAdd(String name) =>
           tester.widget<IconButton>(button('$name 한 장 추가')).onPressed != null;
       await pumpEditor(0);
-      expect(find.text('Sideboard · 4점'), findsOneWidget);
-      expect(find.widgetWithText(ListTile, '1점'), findsOneWidget);
+      expect(find.text('Sideboard · 5점'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, '2점'), findsOneWidget);
+      expect(find.widgetWithText(ListTile, '3점'), findsOneWidget);
       await tester.enterText(
         find.widgetWithText(TextField, '카드명 · 효과 · 키워드'),
         'Red',
@@ -302,7 +305,7 @@ void main() {
           tester
               .widget<IconButton>(
                 find.descendant(
-                  of: find.widgetWithText(ListTile, '1점'),
+                  of: find.widgetWithText(ListTile, 'Red Memory'),
                   matching: button('한 장 더하기'),
                 ),
               )
@@ -318,8 +321,8 @@ void main() {
       c.setMetadata('thumbnailGrid', '1');
       await pumpEditor(1);
       expect(find.widgetWithText(Card, '3점'), findsOneWidget);
-      expect(find.widgetWithText(Card, '1점'), findsOneWidget);
-      expect(find.text('Main에 0장, Side에 1장'), findsOneWidget);
+      expect(find.widgetWithText(Card, '2점'), findsOneWidget);
+      expect(find.text('Main에 0장, Side에 2장'), findsOneWidget);
     },
   );
 
@@ -381,7 +384,7 @@ void main() {
         await tester.tap(find.text('이동'));
         await tester.pumpAndSettle();
         expect(find.text('Main Deck · 2장'), findsOneWidget);
-        expect(find.text('Sideboard · 3점'), findsOneWidget);
+        expect(find.text('Sideboard · 1점'), findsOneWidget);
         await tester.tap(find.byTooltip('한 장 빼기').last);
         await tester.pumpAndSettle();
         expect(find.text('Sideboard · 0점'), findsOneWidget);
