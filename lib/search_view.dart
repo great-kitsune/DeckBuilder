@@ -9,7 +9,7 @@ import 'effect_text.dart';
 class SearchView extends StatefulWidget {
   final Catalog catalog;
   final int revision;
-  final VoidCallback? onAdd;
+  final VoidCallback? onAdd, onCatalogChange;
   final void Function(String card, String? edition)? onPick;
   final Map<String, int> deckCounts;
 
@@ -17,6 +17,7 @@ class SearchView extends StatefulWidget {
     this.catalog, {
     required this.revision,
     this.onAdd,
+    this.onCatalogChange,
     this.onPick,
     this.deckCounts = const {},
     super.key,
@@ -260,13 +261,15 @@ class _SearchViewState extends State<SearchView> {
             r['rarity'],
           ].nonNulls.join(' · ');
     Future<void> open() async {
-      await Navigator.push(
+      final changed = await Navigator.push<bool>(
         context,
-        MaterialPageRoute<void>(
+        MaterialPageRoute<bool>(
           builder: (_) => CardDetail(widget.catalog, id, edition),
         ),
       );
-      if (mounted) setState(refresh);
+      if (!mounted) return;
+      if (changed == true) widget.onCatalogChange?.call();
+      setState(refresh);
     }
 
     final pick = widget.onPick;
@@ -296,10 +299,10 @@ class _SearchViewState extends State<SearchView> {
     }
     final catalog = widget.catalog;
     final local = spoiler
-        ? catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
+        ? (catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
                 id,
-              ]).single['photo']
-              as Uint8List?
+              ]).firstOrNull?['photo']
+              as Uint8List?)
         : null;
     final print = catalog.db
         .select(
@@ -358,12 +361,54 @@ class CardDetail extends StatelessWidget {
   final String id;
   final String? edition;
   const CardDetail(this.catalog, this.id, this.edition, {super.key});
+  Future<void> confirmDelete(BuildContext context, String name) async {
+    final usage = catalog.spoilerUsage(id);
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialog) => AlertDialog(
+        title: const Text('스포일러 카드 삭제'),
+        content: Text(
+          [
+            '‘$name’ 카드와 등록한 사진을 삭제하시겠습니까?',
+            if (usage.decks > 0)
+              '이 카드를 사용 중인 덱 ${usage.decks}개에서 총 ${usage.copies}장도 제거됩니다.',
+          ].join('\n'),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialog, false),
+            child: const Text('취소'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(dialog, true),
+            child: const Text('삭제'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    try {
+      catalog.deleteSpoiler(id, confirmedUsage: usage);
+      Navigator.pop(context, true);
+    } catch (e) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('카드 삭제 실패 · $e')));
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final row = catalog.db.select(
       'SELECT * FROM library_cards WHERE id=COALESCE((SELECT official_id FROM replacements WHERE local_id=?),?)',
       [id, id],
-    ).single;
+    ).firstOrNull;
+    if (row == null) {
+      return Scaffold(
+        appBar: AppBar(),
+        body: const Center(child: Text('삭제된 카드입니다.')),
+      );
+    }
     final c = jsonDecode(row['payload'] as String) as Json;
     final photo = row['photo'] as Uint8List?;
     final prints = catalog.db.select(
@@ -440,11 +485,17 @@ class CardDetail extends StatelessWidget {
               TextButton(
                 onPressed: () {
                   catalog.transaction(() => catalog.resolve(id, candidate));
-                  Navigator.pop(context);
+                  Navigator.pop(context, true);
                 },
                 child: Text(
                   "공식 카드로 교체 · ${catalog.db.select("SELECT group_concat(set_code || ' #' || number, ', ') prints FROM editions WHERE card=?", [candidate]).single['prints'] ?? candidate} ($candidate)",
                 ),
+              ),
+            if (row['spoiler'] == 1 && row['active'] != 0)
+              OutlinedButton.icon(
+                onPressed: () => confirmDelete(context, c['name'] as String),
+                icon: const Icon(Icons.delete_outline),
+                label: const Text('카드 삭제'),
               ),
           ],
         ),

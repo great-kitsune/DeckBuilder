@@ -310,6 +310,7 @@ class _LibraryState extends State<Library> {
                       SearchView(
                         library,
                         revision: revision.value,
+                        onCatalogChange: () => setState(() => revision.value++),
                         onAdd: () async {
                           final saved = await Navigator.push<bool>(
                             context,
@@ -376,7 +377,7 @@ class _LibraryState extends State<Library> {
                                   : () async {
                                       await Navigator.push(
                                         context,
-                                        MaterialPageRoute<void>(
+                                        MaterialPageRoute<bool>(
                                           builder: (_) => CardDetail(
                                             library,
                                             local['id'] as String,

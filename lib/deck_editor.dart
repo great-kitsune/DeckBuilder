@@ -205,7 +205,7 @@ class _DeckEditorState extends State<DeckEditor> {
   Future<void> detail(DeckEntry e) async {
     await Navigator.push(
       context,
-      MaterialPageRoute<void>(
+      MaterialPageRoute<bool>(
         builder: (_) => CardDetail(
           widget.catalog,
           e.card,
@@ -363,6 +363,7 @@ class _DeckEditorState extends State<DeckEditor> {
             widget.catalog,
             revision: widget.revision,
             deckCounts: counts,
+            onCatalogChange: widget.onCatalogChange,
             onPick: (card, edition) => change(
               () =>
                   widget.catalog.addToDeck(widget.deck.id, zone, card, edition),
