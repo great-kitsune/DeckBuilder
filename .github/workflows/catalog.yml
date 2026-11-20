@@ -5,6 +5,8 @@ permissions:
 jobs:
   android:
     runs-on: ubuntu-latest
+    outputs:
+      download: ${{ steps.apk.outputs.artifact-url }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -18,12 +20,86 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build apk --debug
+      - name: Upload Android APK
+        id: apk
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeckBuilder-Android-PR-${{ github.event.number }}
+          path: build/app/outputs/flutter-apk/app-debug.apk
+          if-no-files-found: error
+          retention-days: 30
+          compression-level: 0
   windows:
     runs-on: windows-latest
+    outputs:
+      download: ${{ steps.bundle.outputs.artifact-url }}
     steps:
       - uses: actions/checkout@v4
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.38.7'
       - run: flutter pub get
-      - run: flutter build windows --debug
+      - run: flutter build windows --release
+      - name: Bundle the Visual C++ runtime and check startup
+        shell: pwsh
+        run: |
+          $bundle = Resolve-Path build/windows/x64/runner/Release
+          $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
+          $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
+          $crt = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT" -Directory |
+            Sort-Object { [version]$_.Parent.Parent.Name } -Descending | Select-Object -First 1
+          if (!$crt) { throw 'Visual C++ x64 runtime not found' }
+          Copy-Item "$($crt.FullName)/*.dll" $bundle
+          $app = Start-Process "$bundle/deck_builder.exe" -WorkingDirectory $bundle -PassThru
+          try {
+            if ($app.WaitForExit(8000)) { throw "App exited during startup ($($app.ExitCode))" }
+          } finally {
+            if (!$app.HasExited) { $app.Kill() }
+          }
+      - name: Upload Windows x64 application
+        id: bundle
+        uses: actions/upload-artifact@v4
+        with:
+          name: DeckBuilder-Windows-x64-PR-${{ github.event.number }}
+          path: build/windows/x64/runner/Release/
+          if-no-files-found: error
+          retention-days: 30
+
+  downloads:
+    name: PR downloads
+    needs: [android, windows]
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write
+    env:
+      APK_URL: ${{ needs.android.outputs.download }}
+      WINDOWS_URL: ${{ needs.windows.outputs.download }}
+      PR_NUMBER: ${{ github.event.number }}
+      HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+    steps:
+      - name: Write download links
+        run: |
+          cat > downloads.md <<EOF
+          <!-- deckbuilder-pr-downloads -->
+          ## 실행 파일 다운로드
+          커밋 \`${HEAD_SHA:0:7}\`의 테스트용 빌드입니다. GitHub 로그인 후 30일간 다운로드할 수 있습니다.
+
+          - [Android APK]($APK_URL) — ZIP을 풀고 \`app-debug.apk\`를 설치하세요.
+          - [Windows x64]($WINDOWS_URL) — ZIP 전체를 풀고 \`deck_builder.exe\`를 실행하세요.
+          EOF
+          cat downloads.md >> "$GITHUB_STEP_SUMMARY"
+      - name: Update this PR's download links
+        if: github.event.pull_request.head.repo.full_name == github.repository && github.actor != 'dependabot[bot]'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          # Re-running a superseded commit must not replace the current links.
+          current=$(gh api "repos/$GITHUB_REPOSITORY/pulls/$PR_NUMBER" --jq '.head.sha')
+          if [[ "$current" != "$HEAD_SHA" ]]; then exit 0; fi
+          comments="repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments"
+          existing=$(gh api --paginate "$comments" --jq '.[] | select(.user.login=="github-actions[bot]" and (.body | startswith("<!-- deckbuilder-pr-downloads -->"))) | .id' | head -n 1)
+          if [[ -n "$existing" ]]; then
+            gh api --method PATCH "repos/$GITHUB_REPOSITORY/issues/comments/$existing" -F body=@downloads.md --silent
+          else
+            gh api --method POST "$comments" -F body=@downloads.md --silent
+          fi
