@@ -24,7 +24,6 @@ class _SearchViewState extends State<SearchView> {
   Filters filters = Filters();
   final query = TextEditingController();
   late List<sql.Row> rows;
-  late bool useOfflineImages;
   late Map<String, List<String>> options;
   @override
   void initState() {
@@ -33,7 +32,6 @@ class _SearchViewState extends State<SearchView> {
   }
 
   void refresh() {
-    useOfflineImages = widget.catalog.useOfflineImages;
     options = widget.catalog.options();
     rows = widget.catalog.search(filters);
   }
@@ -269,7 +267,7 @@ class _SearchViewState extends State<SearchView> {
     }
     final catalog = widget.catalog;
     final local = spoiler
-        ? catalog.db.select('SELECT photo FROM cards WHERE id=?', [
+        ? catalog.db.select('SELECT photo FROM spoiler_cards WHERE id=?', [
                 id,
               ]).single['photo']
               as Uint8List?
@@ -277,7 +275,7 @@ class _SearchViewState extends State<SearchView> {
     final print = catalog.db
         .select(
           """SELECT json_extract(payload,'\$.image') image,
-      json_extract(payload,'\$.last_update') version FROM editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
+      json_extract(payload,'\$.last_update') version FROM library_editions WHERE card=? AND (? IS NULL OR id=?) ORDER BY position LIMIT 1""",
           [id, edition, edition],
         )
         .firstOrNull;
@@ -293,7 +291,6 @@ class _SearchViewState extends State<SearchView> {
         ? EditionImage(
             path,
             print?['version']?.toString() ?? '',
-            useOffline: useOfflineImages,
             thumbnail: true,
             key: ValueKey((path, print?['version'], widget.revision)),
           )
@@ -326,14 +323,15 @@ class CardDetail extends StatelessWidget {
   const CardDetail(this.catalog, this.id, this.edition, {super.key});
   @override
   Widget build(BuildContext context) {
-    final row = catalog.db.select('SELECT * FROM cards WHERE id=?', [
-      id,
-    ]).single;
+    final row = catalog.db.select(
+      'SELECT * FROM library_cards WHERE id=COALESCE((SELECT official_id FROM replacements WHERE local_id=?),?)',
+      [id, id],
+    ).single;
     final c = jsonDecode(row['payload'] as String) as Json;
     final photo = row['photo'] as Uint8List?;
     final prints = catalog.db.select(
-      'SELECT * FROM editions WHERE card=? ORDER BY position,id',
-      [id],
+      'SELECT * FROM library_editions WHERE card=? ORDER BY position,id',
+      [row['id']],
     );
     final candidates = row['spoiler'] == 1
         ? catalog.candidates(id)
@@ -354,7 +352,6 @@ class CardDetail extends StatelessWidget {
             EditionImage(
               path,
               e['last_update']?.toString() ?? '',
-              useOffline: catalog.useOfflineImages,
               key: ValueKey((path, e['last_update'])),
             ),
         ],
@@ -409,7 +406,7 @@ class CardDetail extends StatelessWidget {
                   Navigator.pop(context);
                 },
                 child: Text(
-                  "이 공식 카드로 교체 · ${catalog.db.select('SELECT name FROM cards WHERE id=?', [candidate]).single['name']}",
+                  "공식 카드로 교체 · ${catalog.db.select("SELECT group_concat(set_code || ' #' || number, ', ') prints FROM editions WHERE card=?", [candidate]).single['prints'] ?? candidate} ($candidate)",
                 ),
               ),
           ],
