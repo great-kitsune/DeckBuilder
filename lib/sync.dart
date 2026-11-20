@@ -6,17 +6,60 @@ import 'package:http/http.dart' as http;
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog.dart';
 
+class WifiRequired implements Exception {
+  const WifiRequired();
+  @override
+  String toString() => 'Wi-Fi 연결이 필요합니다.';
+}
+
 class OfficialApi {
   final http.Client client;
-  OfficialApi(this.client);
+  final Future<bool> Function()? networkAllowed;
+  OfficialApi(this.client, {this.networkAllowed});
+
+  Future<http.Response> _get(Uri uri) async {
+    final allowed = networkAllowed;
+    if (allowed != null && !await allowed()) throw const WifiRequired();
+    final abort = Completer<void>();
+    bool checking = false;
+    final monitor = allowed == null
+        ? null
+        : Timer.periodic(const Duration(milliseconds: 500), (_) async {
+            if (checking || abort.isCompleted) return;
+            checking = true;
+            try {
+              if (!await allowed() && !abort.isCompleted) abort.complete();
+            } catch (_) {
+              if (!abort.isCompleted) abort.complete();
+            } finally {
+              checking = false;
+            }
+          });
+    try {
+      final request = http.AbortableRequest(
+        'GET',
+        uri,
+        abortTrigger: abort.future,
+      );
+      final response = await client
+          .send(request)
+          .then(http.Response.fromStream)
+          .timeout(const Duration(seconds: 40));
+      if (abort.isCompleted) throw const WifiRequired();
+      return response;
+    } on http.RequestAbortedException {
+      throw const WifiRequired();
+    } finally {
+      monitor?.cancel();
+      if (!abort.isCompleted) abort.complete();
+    }
+  }
 
   Future<dynamic> read(String path, [Map<String, String>? query]) async {
     final uri = Uri.https('api.gatcg.com', path, query);
     for (var attempt = 0; ; attempt++) {
       try {
-        final response = await client
-            .get(uri)
-            .timeout(const Duration(seconds: 40));
+        final response = await _get(uri);
         if (response.statusCode == 200) {
           return jsonDecode(utf8.decode(response.bodyBytes));
         }
@@ -28,7 +71,7 @@ class OfficialApi {
         }
         throw FormatException('카드 API 오류 (HTTP ${response.statusCode})');
       } on Exception catch (e) {
-        if (e is FormatException || attempt >= 2) rethrow;
+        if (e is WifiRequired || e is FormatException || attempt >= 2) rethrow;
         await Future<void>.delayed(Duration(seconds: 1 << attempt));
       }
     }
@@ -123,7 +166,11 @@ Future<void> collect(
   }
 }
 
-Future<void> updateCatalog(String path, void Function(String) report) async {
+Future<void> updateCatalog(
+  String path,
+  void Function(String) report, {
+  Future<bool> Function()? networkAllowed,
+}) async {
   final lock = await File('$path.sync-lock').open(mode: FileMode.append);
   try {
     await lock.lock(FileLock.exclusive);
@@ -138,7 +185,11 @@ Future<void> updateCatalog(String path, void Function(String) report) async {
             'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
           );
         });
-        await collect(stage, OfficialApi(client), report);
+        await collect(
+          stage,
+          OfficialApi(client, networkAllowed: networkAllowed),
+          report,
+        );
       } finally {
         stage.db.close();
       }

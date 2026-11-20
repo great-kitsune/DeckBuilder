@@ -38,7 +38,8 @@ class Catalog {
       CREATE INDEX IF NOT EXISTS by_name ON cards(norm);
       CREATE TABLE IF NOT EXISTS editions(
         id TEXT PRIMARY KEY, card TEXT NOT NULL REFERENCES cards(id),
-        set_code TEXT, number TEXT, rarity TEXT, payload TEXT NOT NULL
+        set_code TEXT, number TEXT, rarity TEXT, payload TEXT NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0
       );
       CREATE INDEX IF NOT EXISTS by_print ON editions(set_code,number);
       CREATE INDEX IF NOT EXISTS prints_by_card ON editions(card);
@@ -51,6 +52,24 @@ class Catalog {
       CREATE TABLE IF NOT EXISTS replacements(local_id TEXT PRIMARY KEY, official_id TEXT NOT NULL REFERENCES cards(id));
       CREATE TABLE IF NOT EXISTS metadata(key TEXT PRIMARY KEY, value TEXT NOT NULL);
     ''');
+    // Earlier catalogs inserted editions in API order without storing an ordinal.
+    if (!db
+        .select('PRAGMA table_info(editions)')
+        .any((r) => r['name'] == 'position')) {
+      transaction(() {
+        db.execute(
+          'ALTER TABLE editions ADD COLUMN position INTEGER NOT NULL DEFAULT 0',
+        );
+        db.execute(
+          '''WITH ordinals AS MATERIALIZED (
+          SELECT id, row_number() OVER (PARTITION BY card ORDER BY rowid)-1 AS n FROM editions
+        ) UPDATE editions SET position=(SELECT n FROM ordinals WHERE ordinals.id=editions.id)''',
+        );
+      });
+    }
+    db.execute(
+      'CREATE INDEX IF NOT EXISTS edition_order ON editions(card,position)',
+    );
   }
 
   void transaction(void Function() body) {
@@ -101,26 +120,35 @@ class Catalog {
         db.execute('INSERT INTO tags VALUES(?,?,?)', [id, g.key, v]);
       }
     }
-    for (final e in prints.cast<Json>()) {
+    for (final (position, e) in prints.cast<Json>().indexed) {
       if (e['card_id'] != null && e['card_id'] != id) {
         throw const FormatException('인쇄판의 카드 ID 불일치');
       }
-      db.execute('INSERT INTO editions VALUES(?,?,?,?,?,?)', [
-        e['uuid'] as String,
-        id,
-        e['set']?['prefix'],
-        e['collector_number'],
-        e['rarity']?.toString(),
-        jsonEncode(e),
-      ]);
+      db.execute(
+        'INSERT INTO editions(id,card,set_code,number,rarity,payload,position) VALUES(?,?,?,?,?,?,?)',
+        [
+          e['uuid'] as String,
+          id,
+          e['set']?['prefix'],
+          e['collector_number'],
+          e['rarity']?.toString(),
+          jsonEncode(e),
+          position,
+        ],
+      );
     }
   }
 
-  String? get updated =>
-      db
-              .select("SELECT value FROM metadata WHERE key='updated'")
-              .firstOrNull?['value']
+  String? metadata(String key) =>
+      db.select('SELECT value FROM metadata WHERE key=?', [
+            key,
+          ]).firstOrNull?['value']
           as String?;
+  void setMetadata(String key, String value) =>
+      db.execute('INSERT OR REPLACE INTO metadata VALUES(?,?)', [key, value]);
+  String? get updated => metadata('updated');
+  bool get wifiOnly => metadata('wifiOnly') == '1';
+  bool get thumbnailGrid => metadata('thumbnailGrid') == '1';
 
   Map<String, List<String>> options() {
     final result = {for (final f in facets) f: <String>[]};

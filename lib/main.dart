@@ -1,5 +1,5 @@
 import 'dart:io';
-import 'dart:isolate';
+import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
@@ -7,7 +7,8 @@ import 'catalog.dart';
 import 'card_image.dart';
 import 'search_view.dart';
 import 'spoiler.dart';
-import 'sync.dart';
+import 'catalog_job.dart';
+import 'package:workmanager/workmanager.dart';
 
 void main() => runApp(const DeckBuilder());
 
@@ -24,9 +25,6 @@ class DeckBuilder extends StatelessWidget {
   );
 }
 
-Future<void> runUpdate(String path, SendPort progress) =>
-    Isolate.run(() => updateCatalog(path, (message) => progress.send(message)));
-
 class Library extends StatefulWidget {
   const Library({super.key});
   @override
@@ -39,6 +37,9 @@ class _LibraryState extends State<Library> {
   int tab = 0, revision = 0;
   bool busy = false;
   String status = '';
+  Timer? progressTimer;
+  bool checking = false;
+  String? lastUpdated;
   @override
   void initState() {
     super.initState();
@@ -53,14 +54,22 @@ class _LibraryState extends State<Library> {
       final db = sqlite3.open(path);
       db.execute('PRAGMA journal_mode=WAL');
       final library = Catalog(db);
+      if (Platform.isAndroid) {
+        await Workmanager().initialize(catalogDispatcher);
+        busy = await Workmanager().isScheduledByUniqueName(catalogTask);
+      }
+      lastUpdated = library.updated;
       if (!mounted) {
         db.close();
         return;
       }
       setState(() {
         store = library;
-        status = '';
+        status = busy
+            ? (library.metadata('downloadStatus') ?? '다운로드 대기 중')
+            : '';
       });
+      if (busy) watchProgress();
     } catch (e) {
       if (mounted) setState(() => status = 'DB 열기 실패 · $e');
     }
@@ -92,25 +101,67 @@ class _LibraryState extends State<Library> {
       busy = true;
       status = '카드 목록 확인 중';
     });
-    final channel = ReceivePort();
-    final sub = channel.listen((m) {
-      if (mounted && busy) setState(() => status = m as String);
-    });
+    final catalog = store!;
     try {
-      await runUpdate(path, channel.sendPort);
-      if (mounted) {
-        setState(() {
-          revision++;
-          status = '업데이트 완료';
-        });
+      catalog.setMetadata('downloadStatus', '다운로드 대기 중');
+      if (Platform.isAndroid) {
+        await Workmanager().registerOneOffTask(
+          catalogTask,
+          catalogTask,
+          inputData: {'path': path},
+          existingWorkPolicy: ExistingWorkPolicy.keep,
+          constraints: Constraints(networkType: NetworkType.connected),
+        );
+        if (mounted) watchProgress();
+      } else {
+        watchProgress();
+        await downloadOnDesktop(path);
+        if (mounted) finishDownload();
       }
     } catch (e) {
-      if (mounted) setState(() => status = '업데이트 실패 · $e\n버튼을 눌러 다시 시도하세요.');
-    } finally {
-      await sub.cancel();
-      channel.close();
-      if (mounted) setState(() => busy = false);
+      if (mounted) {
+        progressTimer?.cancel();
+        setState(() {
+          busy = false;
+          status = '다운로드 중단 · $e';
+        });
+      }
     }
+  }
+
+  void finishDownload() {
+    progressTimer?.cancel();
+    final catalog = store!;
+    final updated = catalog.updated;
+    setState(() {
+      if (updated != lastUpdated) revision++;
+      lastUpdated = updated;
+      busy = false;
+      status = catalog.metadata('downloadStatus') ?? '';
+    });
+  }
+
+  void watchProgress() {
+    progressTimer?.cancel();
+    progressTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
+      if (checking || !mounted) return;
+      checking = true;
+      try {
+        if (Platform.isAndroid &&
+            !await Workmanager().isScheduledByUniqueName(catalogTask)) {
+          if (mounted) finishDownload();
+          return;
+        }
+        if (mounted) {
+          final message = store!.metadata('downloadStatus') ?? '다운로드 대기 중';
+          if (status != message) setState(() => status = message);
+        }
+      } catch (e) {
+        if (mounted) setState(() => status = '진행 상태 확인 실패 · $e');
+      } finally {
+        checking = false;
+      }
+    });
   }
 
   Future<void> manageCache() async {
@@ -144,6 +195,7 @@ class _LibraryState extends State<Library> {
 
   @override
   void dispose() {
+    progressTimer?.cancel();
     store?.db.close();
     super.dispose();
   }
@@ -241,6 +293,33 @@ class _LibraryState extends State<Library> {
                           ListTile(
                             title: const Text('마지막 업데이트'),
                             subtitle: Text(library.updated ?? '설치 전'),
+                          ),
+                          SwitchListTile(
+                            title: const Text('Wi-Fi로만 다운로드'),
+                            subtitle: const Text('카드 데이터베이스 갱신에 적용'),
+                            value: library.wifiOnly,
+                            onChanged: (v) => setState(
+                              () => library.setMetadata(
+                                'wifiOnly',
+                                v ? '1' : '0',
+                              ),
+                            ),
+                          ),
+                          ListTile(
+                            title: const Text('카드 검색 표시 방식'),
+                            subtitle: SegmentedButton<bool>(
+                              segments: const [
+                                ButtonSegment(value: false, label: Text('목록')),
+                                ButtonSegment(value: true, label: Text('썸네일')),
+                              ],
+                              selected: {library.thumbnailGrid},
+                              onSelectionChanged: (v) => setState(
+                                () => library.setMetadata(
+                                  'thumbnailGrid',
+                                  v.single ? '1' : '0',
+                                ),
+                              ),
+                            ),
                           ),
                           syncAction,
                           ListTile(
