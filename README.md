@@ -2,7 +2,14 @@
 
 Grand Archive Utility의 첫 구현은 Windows·Android에서 사용하는 오프라인 카드 DB와 검색이다. Flutter 3.38.7 및 Dart 3.10으로 개발했다.
 
-## 실행
+## PR 실행 파일
+
+각 PR에서 Android APK와 Windows x64 앱을 자동 빌드한다. GitHub에 로그인한 뒤 PR의 **실행 파일 다운로드** 댓글에서 플랫폼을 선택한다. 새 커밋의 두 빌드가 성공하면 댓글 링크도 갱신된다. 포크 PR 등 댓글 쓰기가 제한되는 경우 **Checks → Card catalog** 실행 페이지의 **Artifacts**에서 받는다. 파일은 빌드별로 30일 동안 보관한다.
+
+- **Android** — 다운로드한 ZIP을 풀고 `app-debug.apk`를 설치한다. CI에서 생성한 테스트 서명을 사용하므로 이전 APK와 서명이 다를 수 있다.
+- **Windows x64** — ZIP 전체를 한 폴더에 풀고 `deck_builder.exe`를 실행한다. 함께 들어 있는 DLL과 `data` 폴더가 필요하다.
+
+## 개발 환경에서 실행
 
 Flutter와 대상 플랫폼 도구를 설치한 환경에서 실행한다.
 
