@@ -124,8 +124,9 @@ class SyncProblem implements Exception {
 Future<Map<String, String>> readIndex(OfficialApi api) async {
   final raw = await api.read('/cards/all');
   final index = SplayTreeMap<String, String>();
-  if (raw is! List || raw.isEmpty)
+  if (raw is! List || raw.isEmpty) {
     throw const SyncProblem('index_mismatch', '공식 인덱스가 비어 있습니다.');
+  }
   for (final row in raw) {
     if (row is! Json ||
         row['uuid'] is! String ||
@@ -176,11 +177,12 @@ Future<Map<String, Json>> changedPages(
     for (final row in rows) {
       if (row is! Json ||
           row['uuid'] is! String ||
-          found.containsKey(row['uuid']))
+          found.containsKey(row['uuid'])) {
         throw const SyncProblem(
           'pagination_mismatch',
           '변경 목록에 중복 또는 빈 식별자가 있습니다.',
         );
+      }
       found[row['uuid']] = row;
     }
     progress(SyncPhase.fetching_changes, page, pages);
@@ -222,11 +224,12 @@ Future<void> synchronize(
     progress(SyncPhase.fetching_index, 0, null);
     final index = await readIndex(api);
     final digest = indexDigest(index);
-    if (known.isNotEmpty && index.length < known.length * (1 - fullThreshold))
+    if (known.isNotEmpty && index.length < known.length * (1 - fullThreshold)) {
       throw const SyncProblem(
         'index_mismatch',
         '공식 카드 목록이 급격히 줄었습니다. 기존 데이터를 유지합니다.',
       );
+    }
     if (known.keys.any((id) => !index.containsKey(id))) full = true;
     if (!full) {
       try {
@@ -258,11 +261,12 @@ Future<void> synchronize(
             final detail = await api.read('/cards/${index[id]}');
             if (detail is! Json ||
                 detail['uuid'] != id ||
-                detail['editions'] is! List)
+                detail['editions'] is! List) {
               throw const SyncProblem(
                 'index_mismatch',
                 '상세 카드 식별자가 일치하지 않습니다.',
               );
+            }
             // The search groups backs under fronts. Only the full collector can
             // establish that other fronts don't contribute additional printings.
             final flip =
@@ -307,8 +311,9 @@ Future<void> synchronize(
     progress(SyncPhase.validating, 0, null);
     stage.recordManifest();
     final check = stage.inspect(resolveSpoilers: false);
-    if (check.damaged + check.missing > 0)
+    if (check.damaged + check.missing > 0) {
       throw const SyncProblem('invalid_response', '임시 카드 데이터 검증 실패');
+    }
     if (indexDigest(await readIndex(api)) != digest) {
       full = true;
       continue;
@@ -317,11 +322,12 @@ Future<void> synchronize(
     final clock = Stopwatch()..start();
     void commit(SyncCounts counts) {
       final health = live.inspect(resolveSpoilers: false);
-      if (health.missing + health.damaged > 0)
+      if (health.missing + health.damaged > 0) {
         throw const SyncProblem(
           'database_corrupt',
           '반영 검증 실패 · 기존 DB로 되돌렸습니다.',
         );
+      }
       if (full || state?['index_hash'] != digest) {
         live.db.execute('DELETE FROM sync_index');
         final insert = live.db.prepare('INSERT INTO sync_index VALUES(?,?)');
