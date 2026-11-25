@@ -15,9 +15,10 @@ part 'sync_validation.dart';
 
 class OfficialApi {
   final http.Client client;
-  int requests = 0, bytes = 0;
   OfficialApi(this.client);
   void guard() {}
+  void beforeAttempt() => guard();
+  void received(int bytes) {}
   Future<void> indexReady(String hash, String? baseline) async {}
   Future<void> beginFull() async {}
   Future<dynamic> detail(String path, Json? candidate) => read(path);
@@ -27,11 +28,8 @@ class OfficialApi {
     final response = await getFromApi(
       client,
       uri,
-      beforeAttempt: () {
-        guard();
-        requests++;
-      },
-      received: (n) => bytes += n,
+      beforeAttempt: beforeAttempt,
+      received: received,
     );
     guard();
     return jsonDecode(utf8.decode(response.bodyBytes));
@@ -376,7 +374,7 @@ Future<void> synchronize(
       );
     }
     progress(SyncPhase.validating, 0, null);
-    stage.recordManifest();
+    stage.transaction(stage.recordManifest);
     final check = stage.inspect(resolveSpoilers: false);
     if (check.damaged + check.missing > 0) {
       throw const SyncProblem('invalid_response', '임시 카드 데이터 검증 실패');
@@ -499,7 +497,6 @@ Future<void> updateCatalog(
         }
       }
 
-      CheckpointApi? api;
       try {
         late Catalog stage;
         try {
@@ -512,7 +509,7 @@ Future<void> updateCatalog(
           stage = openStage();
         }
         try {
-          api = CheckpointApi(
+          final transport = CheckpointApi(
             httpClient,
             live,
             stage.db,
@@ -521,7 +518,6 @@ Future<void> updateCatalog(
             job['started_at'] as String,
             requested,
           );
-          final transport = api;
           await synchronize(
             live,
             stage,
@@ -537,11 +533,9 @@ Future<void> updateCatalog(
             (counts, full, ms) {
               transport.guard();
               live.db.execute(
-                '''UPDATE sync_jobs SET requests=requests+?,bytes=bytes+?,fallback=?,added_cards=?,
+                '''UPDATE sync_jobs SET fallback=?,added_cards=?,
                 changed_cards=?,added_editions=?,changed_editions=?,removed_cards=?,apply_ms=? WHERE id=?''',
                 [
-                  transport.requests,
-                  transport.bytes,
                   requested == SyncMode.incremental && full,
                   counts.addedCards,
                   counts.changedCards,
@@ -563,10 +557,6 @@ Future<void> updateCatalog(
         final problem = classifySyncError(e);
         final paused = problem.transient;
         live.transaction(() {
-          live.db.execute(
-            'UPDATE sync_jobs SET requests=requests+?,bytes=bytes+? WHERE id=?',
-            [api?.requests ?? 0, api?.bytes ?? 0, id],
-          );
           live.endSync(
             id,
             paused ? SyncStatus.paused : SyncStatus.failed,

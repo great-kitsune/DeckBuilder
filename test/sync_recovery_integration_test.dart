@@ -40,6 +40,7 @@ void main() {
       final id = live.queueSync(SyncMode.incremental);
       final first = updateCatalog(path, (_) {}, jobId: id, client: client);
       await waiting.future;
+      expect(live.job(id)!['requests'], 1);
       expect(live.queueSync(SyncMode.full), id);
       await updateCatalog(path, (_) {}, jobId: id, client: client);
       release.complete();
