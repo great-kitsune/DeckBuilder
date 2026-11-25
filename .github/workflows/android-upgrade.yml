@@ -29,17 +29,21 @@ jobs:
       - uses: subosito/flutter-action@v2
         with:
           flutter-version: '3.38.7'
-      - name: Build the prior release-mode app with its existing CI debug identity
+      - name: Build the prior release-mode app
         working-directory: previous
         run: flutter build apk --release --build-number=1001
-      - name: Build the upgrade and sign with the same disposable CI identity
+      - name: Build the upgrade and sign both fixtures with a disposable CI identity
         working-directory: current
         run: |
           flutter build apk --release --build-number=1002
           tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
-          "$tools/zipalign" -P 16 -f 4 build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" sign --ks ~/.android/debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$RUNNER_TEMP/upgrade.apk" "$RUNNER_TEMP/aligned.apk"
-          "$tools/apksigner" verify "$RUNNER_TEMP/upgrade.apk"
+          keytool -genkeypair -noprompt -keystore "$RUNNER_TEMP/upgrade-test.p12" -storetype PKCS12 -storepass android -keypass android -alias upgrade-test -keyalg RSA -keysize 2048 -validity 2 -dname "CN=Disposable CI Test"
+          for fixture in previous current; do
+            "$tools/zipalign" -P 16 -f 4 "../$fixture/build/app/outputs/flutter-apk/app-release.apk" "$RUNNER_TEMP/$fixture-aligned.apk"
+            "$tools/apksigner" sign --ks "$RUNNER_TEMP/upgrade-test.p12" --ks-key-alias upgrade-test --ks-pass pass:android --key-pass pass:android --out "$RUNNER_TEMP/$fixture.apk" "$RUNNER_TEMP/$fixture-aligned.apk"
+            "$tools/apksigner" verify "$RUNNER_TEMP/$fixture.apk"
+          done
+          rm "$RUNNER_TEMP/upgrade-test.p12"
       - name: Enable KVM
         run: |
           echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
@@ -51,4 +55,4 @@ jobs:
           target: google_apis
           arch: x86_64
           disable-animations: true
-          script: python3 current/.github/scripts/upgrade_smoke.py previous/build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/upgrade.apk"
+          script: python3 current/.github/scripts/upgrade_smoke.py "$RUNNER_TEMP/previous.apk" "$RUNNER_TEMP/current.apk"
