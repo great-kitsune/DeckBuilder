@@ -18,10 +18,17 @@ Future<BackupPreview> _preview(Uint8List bytes, bool full, String scratch) =>
     Isolate.run(() => prepareRestore(bytes, full, scratch));
 
 class BackupView extends StatefulWidget {
+  final Widget? syncControls;
   final Catalog catalog;
   final String path;
   final FutureOr<void> Function() onRestored;
-  const BackupView(this.catalog, this.path, this.onRestored, {super.key});
+  const BackupView(
+    this.catalog,
+    this.path,
+    this.onRestored, {
+    this.syncControls,
+    super.key,
+  });
   @override
   State<BackupView> createState() => _BackupViewState();
 }
@@ -148,6 +155,7 @@ class _BackupViewState extends State<BackupView> {
       body: SafeArea(
         child: ListView(
           children: [
+            if (widget.syncControls != null) widget.syncControls!,
             for (final full in [false, true])
               for (final importing in [false, true])
                 ListTile(

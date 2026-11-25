@@ -18,6 +18,8 @@ enum SyncPhase {
   checking,
   fetching_index,
   fetching_changes,
+  fetching_card_changes,
+  fetching_edition_changes,
   fetching_details,
   validating,
   applying,

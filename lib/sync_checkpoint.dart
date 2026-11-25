@@ -28,6 +28,22 @@ class CheckpointApi extends OfficialApi {
   }
 
   @override
+  void beforeAttempt() {
+    guard();
+    live.db.execute('UPDATE sync_jobs SET requests=requests+1 WHERE id=?', [
+      id,
+    ]);
+  }
+
+  @override
+  void received(int bytes) {
+    live.db.execute('UPDATE sync_jobs SET bytes=bytes+? WHERE id=?', [
+      bytes,
+      id,
+    ]);
+  }
+
+  @override
   Future<dynamic> read(String path, [Map<String, String>? query]) async {
     guard();
     if (path == '/cards/search' &&
@@ -93,6 +109,9 @@ class CheckpointApi extends OfficialApi {
 
   @override
   Future<void> beginFull() async {
+    if (mode == SyncMode.incremental) {
+      live.db.execute('UPDATE sync_jobs SET fallback=1 WHERE id=?', [id]);
+    }
     if (prepared) return;
     prepared = true;
     // Never resume at a blind page offset. Require a contiguous, intact prefix,

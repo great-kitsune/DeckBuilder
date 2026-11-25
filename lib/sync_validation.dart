@@ -52,9 +52,16 @@ void validateCard(dynamic raw) {
   }
 }
 
-void validatePage(Json data, int page, int pages, List rows) {
+void validatePage(
+  Json data,
+  int page,
+  int pages,
+  List rows,
+  int? expectedCount,
+) {
   final total = data['total_cards'];
-  if (data['page'] != page ||
+  if (total != expectedCount ||
+      data['page'] != page ||
       data['total_pages'] != pages ||
       rows.length > 50 ||
       (data.containsKey('page_size') && data['page_size'] != 50) ||

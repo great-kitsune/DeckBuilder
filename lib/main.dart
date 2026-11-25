@@ -13,6 +13,7 @@ import 'catalog_job.dart';
 import 'sync.dart';
 import 'sync_lock.dart';
 import 'sync_labels.dart';
+import 'sync_history_view.dart';
 import 'package:workmanager/workmanager.dart';
 import 'theme_repository.dart';
 import 'theme_selection_view.dart';
@@ -158,7 +159,7 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
     final lock = await SyncLock.acquire(path);
     if (lock == null) return;
     try {
-      if (catalog.job(id)?['status'] == row['status']) {
+      if (mounted && catalog.job(id)?['status'] == row['status']) {
         catalog.transaction(
           () => catalog.endSync(
             id,
@@ -175,7 +176,18 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && store != null) readProgress();
+    if (state == AppLifecycleState.resumed && store != null) {
+      unawaited(refreshWorkerOnResume());
+    }
+  }
+
+  Future<void> refreshWorkerOnResume() async {
+    try {
+      await recoverWorker();
+      if (mounted) readProgress();
+    } catch (_) {
+      if (mounted) setState(() => status = '다운로드 상태를 확인할 수 없습니다.');
+    }
   }
 
   Future<void> update({bool full = false}) async {
@@ -184,7 +196,11 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
     final pending = catalog.pendingJob;
     final confirmed = await showDialog<bool>(
       context: context,
-      builder: (_) => InstallDialog(installed: catalog.updated != null),
+      builder: (_) => InstallDialog(
+        installed: catalog.updated != null,
+        full: full,
+        resume: pending != null,
+      ),
     );
     if (!mounted || confirmed != true || busy) return;
     final mode = full
@@ -192,11 +208,27 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
         : catalog.updated == null
         ? SyncMode.initial
         : SyncMode.incremental;
-    final id = pending?['id'] as String? ?? catalog.queueSync(mode);
-    catalog.db.execute(
-      "UPDATE sync_jobs SET status='queued',error_code=NULL,error_message=NULL WHERE id=? AND status IN ('interrupted','paused')",
-      [id],
-    );
+    final guard = await SyncLock.acquire(path);
+    if (guard == null) {
+      if (mounted) {
+        ScaffoldMessenger.of(
+          context,
+        ).showSnackBar(const SnackBar(content: Text('데이터 작업이 진행 중입니다.')));
+      }
+      return;
+    }
+    late String id;
+    try {
+      if (!mounted) return;
+      id = catalog.queueSync(mode);
+      catalog.db.execute(
+        "UPDATE sync_jobs SET status='queued',error_code=NULL,error_message=NULL WHERE id=? AND status IN ('interrupted','paused')",
+        [id],
+      );
+    } finally {
+      await guard.close();
+    }
+    if (!mounted) return;
     readProgress();
     try {
       if (Platform.isAndroid) {
@@ -212,14 +244,10 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
       }
     } catch (_) {
       if (!mounted) return;
-      if (catalog.job(id)?['status'] == 'queued') {
-        catalog.endSync(
-          id,
-          SyncStatus.interrupted,
-          code: 'interrupted',
-          message: '작업을 시작할 수 없습니다. 재개하세요.',
-        );
+      if (['queued', 'running'].contains(catalog.job(id)?['status'])) {
+        await recoverWorker();
       }
+
     }
     if (mounted) readProgress();
   }
@@ -272,8 +300,10 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
               if (result.hasManifest)
                 '누락된 텍스트 레코드 · ${result.missing}건'
               else
-                '이전 설치본에는 공식 목록 대조 기준이 없습니다. 재설치하면 누락 건수도 확인할 수 있습니다.',
+                '이전 설치본에는 공식 목록 대조 기준이 없습니다. 전체 데이터 재검사 후 누락 건수도 확인할 수 있습니다.',
               '데이터 손상 · ${result.damaged}건',
+              if (result.damaged + result.missing > 0)
+                '전체 데이터 재검사를 실행하세요. DB를 열 수 없으면 보관한 백업을 확인하세요.',
               '공식 카드로 교체 · ${result.replaced}건',
               '손상된 이미지 캐시 정리 · $damagedImages개',
               if (damagedImages > 0) '해당 이미지는 다음 열람 때 다시 받습니다.',
@@ -367,8 +397,8 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
         job != null && !busy
             ? '다운로드 재개'
             : library.updated == null
-            ? '텍스트만 다운로드'
-            : '재설치',
+            ? '카드 데이터 설치'
+            : '카드 데이터 업데이트',
       ),
     );
     return Scaffold(
@@ -398,7 +428,8 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
                         ? null
                         : (job['completed'] as int) / (job['total'] as int),
                   ),
-                if (job != null && job['phase'] != 'applying')
+                if (job != null &&
+                    (job['phase'] != 'applying' || job['status'] != 'running'))
                   TextButton(
                     onPressed: () async {
                       await cancelSync(path, library, job['id'] as String);
@@ -471,29 +502,38 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
                           ),
                           ListTile(
                             title: const Text('데이터 관리'),
-                            subtitle: const Text('사용자 데이터 및 전체 DB 백업·복원'),
-                            onTap: busy
-                                ? null
-                                : () => Navigator.push<void>(
-                                    context,
-                                    MaterialPageRoute(
-                                      builder: (_) =>
-                                          BackupView(library, path, () async {
-                                            final theme =
-                                                await readGraphicTheme(library);
-                                            if (mounted) {
-                                              widget.selected.value = theme;
-                                            }
-                                            if (mounted) {
-                                              setState(() {
-                                                lastUpdated = library.updated;
-                                                status = '';
-                                                revision.value++;
-                                              });
-                                            }
-                                          }),
-                                    ),
+                            subtitle: const Text('업데이트 · 동기화 기록 · 백업과 복원'),
+                            onTap: () => Navigator.push<void>(
+                              context,
+                              MaterialPageRoute(
+                                builder: (_) => BackupView(
+                                  library,
+                                  path,
+                                  () async {
+                                    final theme = await readGraphicTheme(
+                                      library,
+                                    );
+                                    if (mounted) {
+                                      widget.selected.value = theme;
+                                    }
+                                    if (mounted) {
+                                      setState(() {
+                                        lastUpdated = library.updated;
+                                        status = '';
+                                        revision.value++;
+                                      });
+                                    }
+                                  },
+                                  syncControls: SyncControls(
+                                    library,
+                                    update: update,
+                                    inspect: checkIntegrity,
+                                    cancel: (id) =>
+                                        cancelSync(path, library, id),
                                   ),
+                                ),
+                              ),
+                            ),
                           ),
                           ListTile(
                             title: const Text('마지막 업데이트'),
@@ -583,12 +623,25 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
 }
 
 class InstallDialog extends StatelessWidget {
-  final bool installed;
-  const InstallDialog({required this.installed, super.key});
+  final bool installed, full, resume;
+  const InstallDialog({
+    required this.installed,
+    this.full = false,
+    this.resume = false,
+    super.key,
+  });
 
   @override
   Widget build(BuildContext context) => AlertDialog(
-    title: Text(installed ? '데이터베이스 재설치' : '텍스트만 다운로드'),
+    title: Text(
+      resume
+          ? '다운로드 재개'
+          : full
+          ? '전체 데이터 재검사'
+          : installed
+          ? '카드 데이터 업데이트'
+          : '카드 데이터 설치',
+    ),
     content: const Text(
       '공식 카드와 인쇄판 정보를 다운로드합니다. 모바일 데이터가 사용될 수 있습니다. 이미지는 열람할 때 받아 저장합니다.',
     ),

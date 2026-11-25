@@ -4,7 +4,9 @@ import 'package:sqlite3/sqlite3.dart';
 const phaseLabels = {
   'checking': '기존 데이터 확인',
   'fetching_index': '공식 카드 목록 확인',
-  'fetching_changes': '카드 페이지 조회',
+  'fetching_changes': '전체 카드 페이지 조회',
+  'fetching_card_changes': '카드 변경 페이지 조회',
+  'fetching_edition_changes': '인쇄판 변경 페이지 조회',
   'fetching_details': '상세 카드 조회',
   'validating': '무결성 검증',
   'applying': '데이터 반영',
