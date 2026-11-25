@@ -59,6 +59,7 @@ Uint8List createBackup(String path, bool full, String appVersion) {
     final data = <String, List<Json>>{};
     final db = sqlite3.open(snapshot.path, mode: OpenMode.readOnly);
     String? updated;
+    final schemaVersion = db.userVersion;
     try {
       _check(db);
       updated =
@@ -97,7 +98,7 @@ Uint8List createBackup(String path, bool full, String appVersion) {
         'created_at': DateTime.now().toUtc().toIso8601String(),
         'catalog_updated_at': updated,
         'includes_catalog': full,
-        'schema_version': catalogSchemaVersion,
+        'schema_version': schemaVersion,
         'sha256': fileData.map((k, b) => MapEntry(k, _hash(b))),
         'counts': data.map((k, v) => MapEntry(k, v.length)),
       }),
@@ -295,6 +296,7 @@ void applyRestore(Catalog live, BackupPreview plan) {
         );
       }
       if (plan.full) {
+        live.invalidateSyncBaseline();
         for (final table in _official.keys.toList().reversed) {
           db.execute('DELETE FROM main.$table');
         }
