@@ -11,7 +11,9 @@ const _cardWidth = 248.0;
 const _cardHeight = 348.0;
 const _margin = 24.0;
 const _gap = 14.0;
-const _rowHeight = _cardHeight + 86;
+const _rowHeight = _cardHeight + _gap;
+const deckTitleSize = 160.0;
+const deckTotalSize = 110.0;
 const _ink = Color(0xff163b3c);
 
 TextPainter _text(
@@ -112,40 +114,35 @@ void _drawTile(Canvas canvas, Offset origin, DeckEntry entry, ui.Image? image) {
     weight: FontWeight.bold,
     color: const Color(0xffffffff),
   );
-  final center = Offset(frame.center.dx, face.top + face.height * .82);
+  final badgeWidth = math.max(54.0, quantity.width + 22);
+  final badgeHeight = quantity.height + 12;
+  final factor = math.min(
+    1.0,
+    math.min(face.width / badgeWidth, face.height / badgeHeight),
+  );
+  final half = badgeHeight * factor / 2;
+  final center = Offset(
+    face.center.dx,
+    (face.top + face.height * .82).clamp(
+      face.top + half,
+      math.max(face.top + half, face.bottom - half),
+    ),
+  );
+  canvas.save();
+  canvas.translate(center.dx, center.dy);
+  canvas.scale(factor);
   final badge = Rect.fromCenter(
-    center: center,
-    width: math.max(54, quantity.width + 22),
-    height: quantity.height + 12,
+    center: Offset.zero,
+    width: badgeWidth,
+    height: badgeHeight,
   );
   canvas.drawRRect(
     RRect.fromRectAndRadius(badge, const Radius.circular(6)),
     Paint()..color = const Color(0xd9000000),
   );
-  quantity.paint(
-    canvas,
-    center - Offset(quantity.width / 2, quantity.height / 2),
-  );
+  quantity.paint(canvas, Offset(-quantity.width / 2, -quantity.height / 2));
+  canvas.restore();
   quantity.dispose();
-
-  final title = _text(
-    entry.name,
-    17,
-    _cardWidth,
-    weight: FontWeight.w600,
-    lines: 2,
-  );
-  title.paint(canvas, Offset(frame.left, frame.bottom + 5));
-  final meta = [
-    if (entry.printing.isNotEmpty) entry.printing,
-    ?entry.status,
-  ].join(' · ');
-  if (meta.isNotEmpty) {
-    final subtitle = _text(meta, 14, _cardWidth, lines: 2);
-    subtitle.paint(canvas, Offset(frame.left, frame.bottom + 6 + title.height));
-    subtitle.dispose();
-  }
-  title.dispose();
 }
 
 /// Render every saved entry once per zone and selected edition.
@@ -163,10 +160,25 @@ Future<Uint8List> renderDeckPng(
   final columns = sections.values
       .map((cards) => cards.length)
       .reduce(math.max)
-      .clamp(1, 5);
-  final width = _margin * 2 + columns * _cardWidth + (columns - 1) * _gap;
-  final title = _text(name, 32, width - 2 * _margin, weight: FontWeight.bold);
-  double y = _margin + title.height + 16;
+      .clamp(1, 12);
+  final width =
+      _margin * 2 +
+      math.max(720.0, columns * _cardWidth + (columns - 1) * _gap);
+  final title = _text(
+    name,
+    deckTitleSize,
+    width - 2 * _margin,
+    weight: FontWeight.bold,
+  );
+  final count = entries.fold(0, (n, e) => n + e.quantity);
+  final totalText = _text(
+    '전체 $count장',
+    deckTotalSize,
+    width - 2 * _margin,
+    weight: FontWeight.bold,
+  );
+  final totalY = _margin + title.height + 8;
+  double y = totalY + totalText.height + 28;
   final headers = <DeckZone, TextPainter>{};
   var height = y + _margin;
   for (final group in sections.entries) {
@@ -186,7 +198,7 @@ Future<Uint8List> renderDeckPng(
     );
     headers[group.key] = header;
     height +=
-        header.height + 24 + (group.value.length / columns).ceil() * _rowHeight;
+        header.height + 36 + (group.value.length / columns).ceil() * _rowHeight;
   }
   // Keep large decks within the pixel budget of the mobile raster surface.
   final scale = math.min(
@@ -199,15 +211,18 @@ Future<Uint8List> renderDeckPng(
     ..drawColor(const Color(0xfffafaf6), BlendMode.src);
   try {
     title.paint(canvas, const Offset(_margin, _margin));
+    totalText.paint(canvas, Offset(_margin, totalY));
     for (final group in sections.entries) {
       canvas.drawLine(
         Offset(_margin, y),
         Offset(width - _margin, y),
-        Paint()..color = const Color(0xffa2b9ae),
+        Paint()
+          ..color = _ink
+          ..strokeWidth = 6,
       );
       final header = headers[group.key]!;
-      header.paint(canvas, Offset(_margin, y + 8));
-      y += header.height + 24;
+      header.paint(canvas, Offset(_margin, y + 16));
+      y += header.height + 36;
       for (var i = 0; i < group.value.length; i += columns) {
         final row = group.value.sublist(
           i,
@@ -246,8 +261,8 @@ Future<Uint8List> renderDeckPng(
     final picture = recorder.endRecording();
     try {
       final image = await picture.toImage(
-        (width * scale).ceil(),
-        (height * scale).ceil(),
+        math.max(1, (width * scale).floor()),
+        math.max(1, (height * scale).floor()),
       );
       try {
         final data = await image.toByteData(format: ui.ImageByteFormat.png);
@@ -262,6 +277,7 @@ Future<Uint8List> renderDeckPng(
   } finally {
     if (recorder.isRecording) recorder.endRecording().dispose();
     title.dispose();
+    totalText.dispose();
     for (final header in headers.values) {
       header.dispose();
     }
