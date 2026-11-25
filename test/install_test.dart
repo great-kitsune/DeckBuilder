@@ -63,13 +63,15 @@ void main() {
       });
       catalog.setMetadata('imageMode', 'full');
       for (var i = 0; i < 2; i++) {
-        await updateCatalog(path, (_) {}, client: client);
+        await updateCatalog(path, (_) {}, client: client, mode: SyncMode.full);
       }
       expect(requests, [
         '/cards/all',
         '/cards/search',
         '/cards/all',
+        '/cards/all',
         '/cards/search',
+        '/cards/all',
       ]);
       expect(catalog.inspect(), (
         missing: 0,
@@ -106,7 +108,8 @@ void main() {
       catalog.db.execute(
         "UPDATE cards SET spoiler=1 WHERE id LIKE 'local-%'; UPDATE cards SET active=0 WHERE id='local-old'; INSERT INTO replacements VALUES('local-old','other')",
       );
-      catalog.db.userVersion = 0; // Legacy installs predate versioned migrations.
+      catalog.db.userVersion =
+          0; // Legacy installs predate versioned migrations.
       final migrated = Catalog(catalog.db);
       expect(migrated.updated, isNull);
       expect(
