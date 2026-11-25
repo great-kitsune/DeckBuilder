@@ -151,9 +151,15 @@ void main() {
               '/cards/search' => {
                 'total_pages': 1,
                 'page': 1,
-                'data': [card('a', 'A')],
+                'data': [
+                  card('a', 'A', prints: [edition('ea', 'S', '1', 1)]),
+                ],
               },
-              '/cards/b' => card('b', 'B'),
+              '/cards/b' => card(
+                'b',
+                'B',
+                prints: [edition('eb', 'S', '2', 1)],
+              ),
               _ => throw StateError('unexpected request'),
             }),
             200,

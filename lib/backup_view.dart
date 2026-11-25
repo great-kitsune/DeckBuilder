@@ -7,6 +7,8 @@ import 'package:file_selector/file_selector.dart';
 import 'package:flutter/material.dart';
 import 'package:package_info_plus/package_info_plus.dart';
 import 'catalog.dart';
+import 'sync_lock.dart';
+import 'sync.dart' show discardScratch;
 import 'backup_service.dart';
 
 Future<Uint8List> _snapshot(String path, bool full, String version) =>
@@ -84,11 +86,14 @@ class _BackupViewState extends State<BackupView> {
         ),
       );
       if (yes != true || !mounted) return;
-      final lock = await File(
-        '${widget.path}.sync-lock',
-      ).open(mode: FileMode.append);
+      final lock = await SyncLock.acquire(widget.path);
+      if (lock == null) throw StateError('동기화가 진행 중입니다. 완료 또는 취소 후 복원하세요.');
       try {
-        await lock.lock(FileLock.exclusive);
+        final pending = widget.catalog.pendingJob;
+        if (pending != null &&
+            ['queued', 'running'].contains(pending['status'])) {
+          throw StateError('동기화가 대기 중입니다. 취소 후 복원하세요.');
+        }
         final revision = widget.catalog.db
             .select('PRAGMA data_version')
             .single
@@ -104,6 +109,9 @@ class _BackupViewState extends State<BackupView> {
           throw StateError('저장 중 DB가 변경되었습니다. 다시 시도하세요.');
         }
         applyRestore(widget.catalog, plan);
+        if (full && pending != null) {
+          discardScratch(widget.path, pending['id'] as String);
+        }
         await widget.onRestored();
         message = '복원을 완료했습니다.';
       } finally {
