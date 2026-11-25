@@ -43,7 +43,7 @@ Future<void> clearCardImages() async {
   }
 }
 
-Future<bool> _decodable(Uint8List data) async {
+Future<bool> decodableImage(Uint8List data) async {
   try {
     final codec = await ui.instantiateImageCodec(data, targetWidth: 1);
     try {
@@ -68,7 +68,7 @@ Future<int> removeDamagedImages({List<Directory>? directories}) async {
     if (_loading.containsKey(key)) continue;
     final check = _inspecting.putIfAbsent(key, () async {
       try {
-        if (await _decodable(await file.readAsBytes())) return false;
+        if (await decodableImage(await file.readAsBytes())) return false;
         await file.delete();
         return true;
       } on PathNotFoundException {
@@ -97,7 +97,7 @@ Future<Uint8List> viewedImage(
         final file = File('${dir.path}/$key');
         try {
           final bytes = await file.readAsBytes();
-          if (await _decodable(bytes)) return bytes;
+          if (await decodableImage(bytes)) return bytes;
           await file.delete();
         } on PathNotFoundException {
           continue;
@@ -112,7 +112,7 @@ Future<Uint8List> viewedImage(
         );
         final response = await getFromApi(api, uri);
         final bytes = response.bodyBytes;
-        if (!await _decodable(bytes)) {
+        if (!await decodableImage(bytes)) {
           throw const FormatException('공식 이미지 파일을 읽을 수 없습니다.');
         }
         final target = File('${dirs.first.path}/$key');
