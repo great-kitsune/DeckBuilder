@@ -5,6 +5,7 @@ import 'package:sqlite3/sqlite3.dart';
 import 'package:crypto/crypto.dart';
 
 part 'integrity.dart';
+part 'sync_state.dart';
 part 'decks.dart';
 part 'deck_sort.dart';
 part 'deck_recipe.dart';
@@ -30,7 +31,7 @@ class Filters {
   final all = <String>{};
 }
 
-const catalogSchemaVersion = 1;
+const catalogSchemaVersion = 2;
 
 class Catalog {
   final Database db;
@@ -41,9 +42,10 @@ class Catalog {
     if (version > catalogSchemaVersion) {
       throw const FormatException('더 새로운 DB 버전입니다. 앱을 업데이트하세요.');
     }
-    if (version == 0) {
+    if (version < catalogSchemaVersion) {
       transaction(() {
-        _migrateLegacy();
+        if (db.userVersion == 0) _migrateLegacy();
+        createSyncSchema(db);
         db.userVersion = catalogSchemaVersion;
       });
     }
