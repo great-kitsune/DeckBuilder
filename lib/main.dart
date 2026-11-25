@@ -11,24 +11,82 @@ import 'search_view.dart';
 import 'spoiler.dart';
 import 'catalog_job.dart';
 import 'package:workmanager/workmanager.dart';
+import 'theme_repository.dart';
+import 'theme_selection_view.dart';
 
 void main() => runApp(const DeckBuilder());
 
-class DeckBuilder extends StatelessWidget {
+class DeckBuilder extends StatefulWidget {
   const DeckBuilder({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-    title: 'Grand Archive Utility',
-    theme: ThemeData(
-      colorSchemeSeed: const Color(0xff31585b),
-      useMaterial3: true,
-    ),
-    home: const Library(),
-  );
+  State<DeckBuilder> createState() => _DeckBuilderState();
+}
+
+class _DeckBuilderState extends State<DeckBuilder> {
+  final selected = ValueNotifier<SelectedGraphic?>(null);
+  @override
+  void dispose() {
+    selected.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) =>
+      ValueListenableBuilder<SelectedGraphic?>(
+        valueListenable: selected,
+        builder: (context, graphic, _) {
+          final base = ThemeData(
+            colorSchemeSeed: const Color(0xff31585b),
+            useMaterial3: true,
+            brightness: graphic == null ? Brightness.light : Brightness.dark,
+          );
+          return MaterialApp(
+            title: 'Grand Archive Utility',
+            theme: graphic == null
+                ? base
+                : base.copyWith(
+                    scaffoldBackgroundColor: Colors.transparent,
+                    appBarTheme: AppBarTheme(
+                      backgroundColor: base.colorScheme.surface,
+                    ),
+                    listTileTheme: ListTileThemeData(
+                      tileColor: base.colorScheme.surface.withValues(
+                        alpha: .72,
+                      ),
+                    ),
+                    inputDecorationTheme: InputDecorationTheme(
+                      filled: true,
+                      fillColor: base.colorScheme.surface,
+                    ),
+                  ),
+            builder: (context, child) => Stack(
+              fit: StackFit.expand,
+              children: [
+                if (graphic != null) ...[
+                  Image.memory(
+                    graphic.image,
+                    fit: BoxFit.cover,
+                    cacheWidth: 800,
+                    excludeFromSemantics: true,
+                    errorBuilder: (_, _, _) =>
+                        ColoredBox(color: base.colorScheme.surface),
+                  ),
+                  ColoredBox(
+                    color: Colors.black.withValues(alpha: graphic.overlay),
+                  ),
+                ],
+                child!,
+              ],
+            ),
+            home: Library(selected),
+          );
+        },
+      );
 }
 
 class Library extends StatefulWidget {
-  const Library({super.key});
+  final ValueNotifier<SelectedGraphic?> selected;
+  const Library(this.selected, {super.key});
   @override
   State<Library> createState() => _LibraryState();
 }
@@ -61,11 +119,13 @@ class _LibraryState extends State<Library> {
         await Workmanager().initialize(catalogDispatcher);
         busy = await Workmanager().isScheduledByUniqueName(catalogTask);
       }
+      final initialTheme = await readGraphicTheme(library);
       lastUpdated = library.updated;
       if (!mounted) {
         db.close();
         return;
       }
+      widget.selected.value = initialTheme;
       setState(() {
         store = library;
         status = busy
@@ -333,6 +393,20 @@ class _LibraryState extends State<Library> {
                         padding: const EdgeInsets.all(20),
                         children: [
                           ListTile(
+                            title: const Text('테마 선택'),
+                            onTap: busy
+                                ? null
+                                : () => Navigator.push<void>(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) => ThemeSelectionView(
+                                        library,
+                                        widget.selected,
+                                      ),
+                                    ),
+                                  ),
+                          ),
+                          ListTile(
                             title: const Text('데이터 관리'),
                             subtitle: const Text('사용자 데이터 및 전체 DB 백업·복원'),
                             onTap: busy
@@ -341,7 +415,12 @@ class _LibraryState extends State<Library> {
                                     context,
                                     MaterialPageRoute(
                                       builder: (_) =>
-                                          BackupView(library, path, () {
+                                          BackupView(library, path, () async {
+                                            final theme =
+                                                await readGraphicTheme(library);
+                                            if (mounted) {
+                                              widget.selected.value = theme;
+                                            }
                                             if (mounted) {
                                               setState(() {
                                                 lastUpdated = library.updated;

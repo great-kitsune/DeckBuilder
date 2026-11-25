@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:io';
 import 'dart:isolate';
 import 'dart:typed_data';
@@ -17,7 +18,7 @@ Future<BackupPreview> _preview(Uint8List bytes, bool full, String scratch) =>
 class BackupView extends StatefulWidget {
   final Catalog catalog;
   final String path;
-  final VoidCallback onRestored;
+  final FutureOr<void> Function() onRestored;
   const BackupView(this.catalog, this.path, this.onRestored, {super.key});
   @override
   State<BackupView> createState() => _BackupViewState();
@@ -103,7 +104,7 @@ class _BackupViewState extends State<BackupView> {
           throw StateError('저장 중 DB가 변경되었습니다. 다시 시도하세요.');
         }
         applyRestore(widget.catalog, plan);
-        widget.onRestored();
+        await widget.onRestored();
         message = '복원을 완료했습니다.';
       } finally {
         await lock.close();

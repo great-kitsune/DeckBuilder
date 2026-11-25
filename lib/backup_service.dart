@@ -9,7 +9,7 @@ import 'catalog.dart';
 
 const backupFormat = 1;
 const backupByteLimit = 384 * 1024 * 1024;
-const userSettings = ['thumbnailGrid'];
+const userSettings = ['thumbnailGrid', 'graphicsTheme'];
 const _users = {
   'decks': 'id,name',
   'spoiler_cards': 'id,name,norm,spoiler,active,effect,payload,photo',
