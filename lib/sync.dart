@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:async';
 import 'dart:io';
 import 'dart:collection';
 import 'package:crypto/crypto.dart';
@@ -7,11 +8,18 @@ import 'package:http/http.dart' as http;
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog.dart';
 import 'api_request.dart';
+import 'sync_lock.dart';
+
+part 'sync_checkpoint.dart';
 
 class OfficialApi {
   final http.Client client;
   int requests = 0, bytes = 0;
   OfficialApi(this.client);
+  Future<void> indexReady(String hash, String? baseline) async {}
+  Future<void> beginFull() async {}
+  Future<dynamic> detail(String path, Json? candidate) => read(path);
+
   Future<dynamic> read(String path, [Map<String, String>? query]) async {
     final uri = Uri.https('api.gatcg.com', path, query);
     requests++;
@@ -61,9 +69,8 @@ Future<void> collect(
     'sort': 'name',
   });
   int? totalPages;
-  var nextPage = pageData(1);
   for (var page = 1; ; page++) {
-    final result = await nextPage as Json;
+    final result = await pageData(page) as Json;
     totalPages ??= result['total_pages'] as int;
     final rows = result['data'] as List;
     if (result['page'] != page ||
@@ -71,11 +78,6 @@ Future<void> collect(
         totalPages < page ||
         rows.isEmpty) {
       throw const FormatException('카드 페이지가 누락되거나 수집 중 변경되었습니다.');
-    }
-    if (page < totalPages) {
-      nextPage = pageData(page + 1);
-      // The current page may fail validation before the next await.
-      nextPage.ignore();
     }
     stage.transaction(() {
       for (final c in rows.cast<Json>()) {
@@ -124,8 +126,9 @@ class SyncProblem implements Exception {
 Future<Map<String, String>> readIndex(OfficialApi api) async {
   final raw = await api.read('/cards/all');
   final index = SplayTreeMap<String, String>();
-  if (raw is! List || raw.isEmpty)
+  if (raw is! List || raw.isEmpty) {
     throw const SyncProblem('index_mismatch', '공식 인덱스가 비어 있습니다.');
+  }
   for (final row in raw) {
     if (row is! Json ||
         row['uuid'] is! String ||
@@ -176,11 +179,12 @@ Future<Map<String, Json>> changedPages(
     for (final row in rows) {
       if (row is! Json ||
           row['uuid'] is! String ||
-          found.containsKey(row['uuid']))
+          found.containsKey(row['uuid'])) {
         throw const SyncProblem(
           'pagination_mismatch',
           '변경 목록에 중복 또는 빈 식별자가 있습니다.',
         );
+      }
       found[row['uuid']] = row;
     }
     progress(SyncPhase.fetching_changes, page, pages);
@@ -222,11 +226,13 @@ Future<void> synchronize(
     progress(SyncPhase.fetching_index, 0, null);
     final index = await readIndex(api);
     final digest = indexDigest(index);
-    if (known.isNotEmpty && index.length < known.length * (1 - fullThreshold))
+    await api.indexReady(digest, state?['last_successful_sync'] as String?);
+    if (known.isNotEmpty && index.length < known.length * (1 - fullThreshold)) {
       throw const SyncProblem(
         'index_mismatch',
         '공식 카드 목록이 급격히 줄었습니다. 기존 데이터를 유지합니다.',
       );
+    }
     if (known.keys.any((id) => !index.containsKey(id))) full = true;
     if (!full) {
       try {
@@ -255,14 +261,18 @@ Future<void> synchronize(
           var done = 0;
           progress(SyncPhase.fetching_details, 0, ids.length);
           for (final id in ids) {
-            final detail = await api.read('/cards/${index[id]}');
+            final detail = await api.detail(
+              '/cards/${index[id]}',
+              editions[id] ?? cards[id],
+            );
             if (detail is! Json ||
                 detail['uuid'] != id ||
-                detail['editions'] is! List)
+                detail['editions'] is! List) {
               throw const SyncProblem(
                 'index_mismatch',
                 '상세 카드 식별자가 일치하지 않습니다.',
               );
+            }
             // The search groups backs under fronts. Only the full collector can
             // establish that other fronts don't contribute additional printings.
             final flip =
@@ -293,6 +303,7 @@ Future<void> synchronize(
       }
     }
     if (full) {
+      await api.beginFull();
       stage.db.execute(
         'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
       );
@@ -307,8 +318,9 @@ Future<void> synchronize(
     progress(SyncPhase.validating, 0, null);
     stage.recordManifest();
     final check = stage.inspect(resolveSpoilers: false);
-    if (check.damaged + check.missing > 0)
+    if (check.damaged + check.missing > 0) {
       throw const SyncProblem('invalid_response', '임시 카드 데이터 검증 실패');
+    }
     if (indexDigest(await readIndex(api)) != digest) {
       full = true;
       continue;
@@ -317,11 +329,12 @@ Future<void> synchronize(
     final clock = Stopwatch()..start();
     void commit(SyncCounts counts) {
       final health = live.inspect(resolveSpoilers: false);
-      if (health.missing + health.damaged > 0)
+      if (health.missing + health.damaged > 0) {
         throw const SyncProblem(
           'database_corrupt',
           '반영 검증 실패 · 기존 DB로 되돌렸습니다.',
         );
+      }
       if (full || state?['index_hash'] != digest) {
         live.db.execute('DELETE FROM sync_index');
         final insert = live.db.prepare('INSERT INTO sync_index VALUES(?,?)');
@@ -357,41 +370,156 @@ Future<void> synchronize(
   throw const SyncProblem('index_mismatch', '공식 목록이 작업 중 반복해서 변경되었습니다.');
 }
 
+String syncDirectory(String path, String id) => '$path.sync-$id';
+void discardScratch(String path, String id) {
+  final dir = Directory(syncDirectory(path, id));
+  if (dir.existsSync()) dir.deleteSync(recursive: true);
+}
+
+Future<void> cancelSync(String path, Catalog live, String id) async {
+  live.transaction(
+    () => live.endSync(
+      id,
+      SyncStatus.cancelled,
+      code: 'cancelled',
+      message: '사용자가 취소했습니다.',
+    ),
+  );
+  final lock = await SyncLock.acquire(path);
+  if (lock != null) {
+    try {
+      discardScratch(path, id);
+    } finally {
+      await lock.close();
+    }
+  }
+}
+
 Future<void> updateCatalog(
   String path,
   void Function(String) report, {
   http.Client? client,
   SyncMode? mode,
+  String? jobId,
 }) async {
-  final lock = await File('$path.sync-lock').open(mode: FileMode.append);
+  final lock = await SyncLock.acquire(path);
+  if (lock == null) return;
   final httpClient = client ?? http.Client();
   try {
-    await lock.lock(FileLock.exclusive);
     final live = Catalog(sqlite3.open(path));
     try {
-      final scratch = Directory.systemTemp.createTempSync('catalog-sync-');
-      try {
-        final file = '${scratch.path}/stage.sqlite';
-        final stage = Catalog(sqlite3.open(file));
-        try {
-          await synchronize(
-            live,
-            stage,
-            file,
-            OfficialApi(httpClient),
+      final id =
+          jobId ??
+          live.queueSync(
             mode ??
                 (live.updated == null
                     ? SyncMode.initial
                     : SyncMode.incremental),
-            syncNow(),
-            (phase, n, total) => report('${phase.name} · $n / ${total ?? "?"}'),
-            (counts, full, ms) {},
+          );
+      final job = live.job(id);
+      if (job == null || live.pendingJob?['id'] != id) return;
+      final requested = SyncMode.values.byName(job['mode'] as String);
+      final directory = Directory(syncDirectory(path, id));
+      final file = '${directory.path}/stage.sqlite';
+      Catalog openStage() {
+        directory.createSync(recursive: true);
+        final db = sqlite3.open(file);
+        try {
+          if (db.select('PRAGMA quick_check').single.values.first != 'ok') {
+            throw const FormatException('임시 DB 손상');
+          }
+          return Catalog(db);
+        } catch (_) {
+          db.close();
+          rethrow;
+        }
+      }
+
+      CheckpointApi? api;
+      try {
+        late Catalog stage;
+        try {
+          stage = openStage();
+        } on SqliteException {
+          discardScratch(path, id);
+          stage = openStage();
+        } on FormatException {
+          discardScratch(path, id);
+          stage = openStage();
+        }
+        try {
+          api = CheckpointApi(
+            httpClient,
+            live,
+            stage.db,
+            id,
+            file,
+            job['started_at'] as String,
+            requested,
+          );
+          final transport = api;
+          await synchronize(
+            live,
+            stage,
+            file,
+            transport,
+            requested,
+            job['started_at'] as String,
+            (phase, n, total) {
+              transport.guard();
+              live.progress(id, phase, n, total);
+              report('${phase.name} · $n / ${total ?? "?"}');
+            },
+            (counts, full, ms) {
+              transport.guard();
+              live.db.execute(
+                '''UPDATE sync_jobs SET requests=requests+?,bytes=bytes+?,fallback=?,added_cards=?,
+                changed_cards=?,added_editions=?,changed_editions=?,removed_cards=?,apply_ms=? WHERE id=?''',
+                [
+                  transport.requests,
+                  transport.bytes,
+                  requested == SyncMode.incremental && full,
+                  counts.addedCards,
+                  counts.changedCards,
+                  counts.addedEditions,
+                  counts.changedEditions,
+                  counts.removedCards,
+                  ms,
+                  id,
+                ],
+              );
+              live.endSync(id, SyncStatus.completed);
+            },
+            beforeApply: transport.guard,
           );
         } finally {
           stage.db.close();
         }
+      } catch (e) {
+        final paused =
+            e is SocketException ||
+            e is http.ClientException ||
+            e is TimeoutException ||
+            e is HttpException;
+        live.transaction(() {
+          live.db.execute(
+            'UPDATE sync_jobs SET requests=requests+?,bytes=bytes+? WHERE id=?',
+            [api?.requests ?? 0, api?.bytes ?? 0, id],
+          );
+          live.endSync(
+            id,
+            paused ? SyncStatus.paused : SyncStatus.failed,
+            code: e is SyncProblem
+                ? e.code
+                : paused
+                ? 'network_unavailable'
+                : 'invalid_response',
+            message: paused ? '연결을 확인한 후 재개하세요.' : '데이터를 검증할 수 없습니다.',
+          );
+        });
+        if (e is! SyncCancelled) rethrow;
       } finally {
-        scratch.deleteSync(recursive: true);
+        if (live.pendingJob?['id'] != id) discardScratch(path, id);
       }
     } finally {
       live.db.close();

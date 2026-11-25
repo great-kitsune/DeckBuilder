@@ -5,28 +5,17 @@ import 'catalog.dart';
 import 'sync.dart';
 
 const catalogTask = 'catalog-download';
-Future<void> downloadInWorker(String path) async {
-  final catalog = Catalog(sqlite3.open(path));
-  void report(String text) => catalog.setMetadata('downloadStatus', text);
-  try {
-    await updateCatalog(path, report);
-    report('설치 완료');
-  } catch (e) {
-    report('업데이트 실패 · $e');
-    rethrow;
-  } finally {
-    catalog.db.close();
-  }
-}
+Future<void> downloadInWorker(String path, [String? id]) =>
+    updateCatalog(path, (_) {}, jobId: id);
 
-Future<void> downloadOnDesktop(String path) =>
-    Isolate.run(() => downloadInWorker(path));
+Future<void> downloadOnDesktop(String path, [String? id]) =>
+    Isolate.run(() => downloadInWorker(path, id));
 
 @pragma('vm:entry-point')
 void catalogDispatcher() {
   Workmanager().executeTask((task, data) async {
     if (task != catalogTask) return true;
-    await downloadInWorker(data!['path'] as String);
+    await downloadInWorker(data!['path'] as String, data['id'] as String?);
     return true;
   });
 }
