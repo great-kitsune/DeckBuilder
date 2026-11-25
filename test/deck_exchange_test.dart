@@ -174,7 +174,6 @@ void main() {
         }
 
         expect(deckTitleSize, 160);
-        expect(deckTotalSize, 110);
         final twelve = await dimensions(12),
             thirteen = await dimensions(13),
             twentyFour = await dimensions(24),
@@ -243,7 +242,7 @@ void main() {
         final requests = <(String, String)>[];
         final bytes = await renderDeckPng(
           db,
-          'Images',
+          'I',
           db.deckEntries(id),
           load: (path, version) async {
             requests.add((path, version));
@@ -259,6 +258,12 @@ void main() {
           ))!;
           int rgb(int x, int y) =>
               data.getUint32((y * image.width + x) * 4) >> 8;
+          // A single-line title should lead directly into the first section.
+          // The previous deck-wide total moved this divider below 300 pixels.
+          expect(
+            [for (var y = 0; y < 300; y++) rgb(image.width - 30, y)],
+            contains(0x163b3c),
+          );
           // Find both source colors in the same row, then inspect the lower center
           // of the first thumbnail for the translucent badge and white digit.
           var top = 0;
