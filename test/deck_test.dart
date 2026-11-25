@@ -57,7 +57,11 @@ void main() {
                     'total_pages': 1,
                     'data': [
                       card('one', 'Twin', cost: 'reserve', prints: prints),
-                      card('two', 'Twin'),
+                      card(
+                        'two',
+                        'Twin',
+                        prints: [edition('e-two', 'S', '2', 1)],
+                      ),
                     ],
                   },
           ),

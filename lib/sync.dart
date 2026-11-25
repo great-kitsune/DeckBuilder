@@ -1,5 +1,4 @@
 import 'dart:convert';
-import 'dart:async';
 import 'dart:io';
 import 'dart:collection';
 import 'package:crypto/crypto.dart';
@@ -10,21 +9,31 @@ import 'catalog.dart';
 import 'api_request.dart';
 import 'sync_lock.dart';
 
+export 'api_request.dart' show SyncProblem;
 part 'sync_checkpoint.dart';
+part 'sync_validation.dart';
 
 class OfficialApi {
   final http.Client client;
   int requests = 0, bytes = 0;
   OfficialApi(this.client);
+  void guard() {}
   Future<void> indexReady(String hash, String? baseline) async {}
   Future<void> beginFull() async {}
   Future<dynamic> detail(String path, Json? candidate) => read(path);
 
   Future<dynamic> read(String path, [Map<String, String>? query]) async {
     final uri = Uri.https('api.gatcg.com', path, query);
-    requests++;
-    final response = await getFromApi(client, uri);
-    bytes += response.bodyBytes.length;
+    final response = await getFromApi(
+      client,
+      uri,
+      beforeAttempt: () {
+        guard();
+        requests++;
+      },
+      received: (n) => bytes += n,
+    );
+    guard();
     return jsonDecode(utf8.decode(response.bodyBytes));
   }
 }
@@ -40,9 +49,13 @@ Future<void> collect(
   final missing = Map.of(index);
   final seen = <String>{};
   void insert(Json card) {
+    validateCard(card);
     final id = card['uuid'] as String;
     if (!missing.containsKey(id) || !seen.add(id)) {
-      throw FormatException('카드 인덱스 불일치: $id');
+      throw const SyncProblem(
+        'index_mismatch',
+        '공식 카드 목록의 UUID가 중복되거나 일치하지 않습니다.',
+      );
     }
     stage.insert(card);
     missing.remove(id);
@@ -57,7 +70,15 @@ Future<void> collect(
         final face = Json.of(raw as Json);
         final id = face['uuid'] as String;
         final edition = face.remove('edition') as Json;
-        faces[id] = face..remove('edition_id');
+        face.remove('edition_id');
+        if (faces.containsKey(id) && jsonEncode(faces[id]) != jsonEncode(face)) {
+          invalidData('양면 카드 정보가 충돌했습니다.');
+        }
+        final known = facePrints[id]?[edition['uuid']];
+        if (known != null && jsonEncode(known) != jsonEncode(edition)) {
+          invalidData('양면 인쇄판 정보가 충돌했습니다.');
+        }
+        faces[id] = face;
         (facePrints[id] ??= {})[edition['uuid'] as String] = edition;
       }
     }
@@ -73,11 +94,15 @@ Future<void> collect(
     final result = await pageData(page) as Json;
     totalPages ??= result['total_pages'] as int;
     final rows = result['data'] as List;
+    validatePage(result, page, totalPages, rows);
     if (result['page'] != page ||
         result['total_pages'] != totalPages ||
         totalPages < page ||
         rows.isEmpty) {
-      throw const FormatException('카드 페이지가 누락되거나 수집 중 변경되었습니다.');
+      throw const SyncProblem(
+        'pagination_mismatch',
+        '카드 페이지가 누락되거나 수집 중 변경되었습니다.',
+      );
     }
     stage.transaction(() {
       for (final c in rows.cast<Json>()) {
@@ -115,13 +140,6 @@ Future<void> collect(
 }
 
 const fullThreshold = .30;
-
-class SyncProblem implements Exception {
-  final String code, message;
-  const SyncProblem(this.code, this.message);
-  @override
-  String toString() => message;
-}
 
 Future<Map<String, String>> readIndex(OfficialApi api) async {
   final raw = await api.read('/cards/all');
@@ -169,6 +187,7 @@ Future<Map<String, Json>> changedPages(
     }
     final rows = data['data'] as List;
     pages ??= data['total_pages'] as int;
+    validatePage(data, page, pages, rows);
     if (pages == 0 && rows.isEmpty && page == 1) return found;
     if (data['total_pages'] != pages ||
         pages < page ||
@@ -227,7 +246,13 @@ Future<void> synchronize(
     final index = await readIndex(api);
     final digest = indexDigest(index);
     await api.indexReady(digest, state?['last_successful_sync'] as String?);
-    if (known.isNotEmpty && index.length < known.length * (1 - fullThreshold)) {
+    final active =
+        live.db
+                .select('SELECT count(*) n FROM cards WHERE active=1')
+                .single['n']
+            as int;
+    if (index.length < active * (1 - fullThreshold) ||
+        index.length < known.length * (1 - fullThreshold)) {
       throw const SyncProblem(
         'index_mismatch',
         '공식 카드 목록이 급격히 줄었습니다. 기존 데이터를 유지합니다.',
@@ -273,6 +298,7 @@ Future<void> synchronize(
                 '상세 카드 식별자가 일치하지 않습니다.',
               );
             }
+            validateCard(detail);
             // The search groups backs under fronts. Only the full collector can
             // establish that other fronts don't contribute additional printings.
             final flip =
@@ -294,7 +320,8 @@ Future<void> synchronize(
             progress(SyncPhase.fetching_details, ++done, ids.length);
           }
         }
-      } on SyncProblem {
+      } on SyncProblem catch (e) {
+        if (e.transient) rethrow;
         full = true;
       } on FormatException {
         full = true;
@@ -496,11 +523,8 @@ Future<void> updateCatalog(
           stage.db.close();
         }
       } catch (e) {
-        final paused =
-            e is SocketException ||
-            e is http.ClientException ||
-            e is TimeoutException ||
-            e is HttpException;
+        final problem = classifySyncError(e);
+        final paused = problem.transient;
         live.transaction(() {
           live.db.execute(
             'UPDATE sync_jobs SET requests=requests+?,bytes=bytes+? WHERE id=?',
@@ -509,12 +533,8 @@ Future<void> updateCatalog(
           live.endSync(
             id,
             paused ? SyncStatus.paused : SyncStatus.failed,
-            code: e is SyncProblem
-                ? e.code
-                : paused
-                ? 'network_unavailable'
-                : 'invalid_response',
-            message: paused ? '연결을 확인한 후 재개하세요.' : '데이터를 검증할 수 없습니다.',
+            code: problem.code,
+            message: problem.message,
           );
         });
         if (e is! SyncCancelled) rethrow;

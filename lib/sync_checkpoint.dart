@@ -22,6 +22,7 @@ class CheckpointApi extends OfficialApi {
       'CREATE TABLE IF NOT EXISTS responses(key TEXT PRIMARY KEY, body TEXT NOT NULL,digest TEXT NOT NULL)',
     );
   }
+  @override
   void guard() {
     if (live.job(id)?['status'] == 'cancelled') throw SyncCancelled();
   }
