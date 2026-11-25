@@ -161,6 +161,35 @@ void main() {
   );
 
   testWidgets(
+    'PNG wraps at twelve entries per section and keeps the pixel budget',
+    (tester) async {
+      await tester.runAsync(() async {
+        final id = db.createDeck('Rows');
+        db.addToDeck(id, DeckZone.main, 'r', null);
+        final entry = db.deckEntries(id).single;
+        Future<(int, int)> dimensions(int n) async {
+          final bytes = await renderDeckPng(db, 'Deck', List.filled(n, entry));
+          final header = ByteData.sublistView(bytes);
+          return (header.getUint32(16), header.getUint32(20));
+        }
+
+        expect(deckTitleSize, 160);
+        expect(deckTotalSize, 110);
+        final twelve = await dimensions(12),
+            thirteen = await dimensions(13),
+            twentyFour = await dimensions(24),
+            twentyFive = await dimensions(25);
+        expect(twelve.$1, 24 * 2 + 12 * 248 + 11 * 14);
+        expect(thirteen.$2 - twelve.$2, 348 + 14);
+        expect(twentyFour, thirteen);
+        expect(twentyFive.$2 - twentyFour.$2, 348 + 14);
+        final large = await dimensions(220);
+        expect(large.$1, lessThan(twelve.$1));
+        expect(large.$1 * large.$2, lessThanOrEqualTo(16000000));
+      });
+    },
+  );
+  testWidgets(
     'PNG draws selected artwork and local spoilers with quantity badges on the face',
     (tester) async {
       await tester.runAsync(() async {
