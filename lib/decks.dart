@@ -65,6 +65,7 @@ typedef DeckEntry = ({
   String edition,
   int quantity,
   DeckCost cost,
+  DeckSortKey sortKey,
   bool spoiler,
   String name,
   String officialName,
@@ -108,6 +109,9 @@ extension DeckStorage on Catalog {
       '''
       SELECT d.*,json_extract(c.payload,'\$.english_name') english_name,COALESCE(c.name,s.name,d.card) name,COALESCE(s.spoiler,0) spoiler,
         json_extract(COALESCE(c.payload,s.payload),'\$.cost.type') cost_type,
+        json_extract(COALESCE(c.payload,s.payload),'\$.elements') elements,
+        json_extract(COALESCE(c.payload,s.payload),'\$.types') types,
+        json_extract(COALESCE(c.payload,s.payload),'\$.cost.value') cost_value,
         COALESCE(c.active,s.active,0) active,COALESCE(e.id,se.id) current_print,
         COALESCE(e.set_code,se.set_code,json_extract(r.payload,'\$.set.prefix')) set_code,
         COALESCE(e.number,se.number,json_extract(r.payload,'\$.collector_number')) number
@@ -121,7 +125,7 @@ extension DeckStorage on Catalog {
     ''',
       [deck],
     );
-    return [
+    return <DeckEntry>[
       for (final r in rows)
         (
           deck: deck,
@@ -130,6 +134,7 @@ extension DeckStorage on Catalog {
           edition: r['edition'] as String,
           quantity: r['quantity'] as int,
           cost: DeckCost.parse(r['cost_type']),
+          sortKey: deckSortKey(r['elements'], r['cost_value'], r['types']),
           spoiler: r['spoiler'] == 1,
           name: r['name'] as String,
           officialName:
@@ -148,7 +153,7 @@ extension DeckStorage on Catalog {
             _ => null,
           },
         ),
-    ];
+    ]..sort(compareDeckEntries);
   }
 
   void _put(

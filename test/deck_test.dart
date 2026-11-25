@@ -75,7 +75,7 @@ void main() {
             .map((e) => (e.zone, e.quantity)),
         unorderedEquals([(DeckZone.main, 2), (DeckZone.sideboard, 1)]),
       );
-      final row = original.first;
+      final row = original.firstWhere((entry) => entry.zone == DeckZone.main);
       expect(
         () => reopened.takeCopies(row, row.quantity + 1, to: DeckZone.material),
         throwsStateError,

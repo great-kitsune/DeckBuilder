@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 
 part 'integrity.dart';
 part 'decks.dart';
+part 'deck_sort.dart';
 part 'deck_recipe.dart';
 
 typedef Json = Map<String, dynamic>;

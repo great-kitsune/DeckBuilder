@@ -157,7 +157,8 @@ Future<Uint8List> renderDeckPng(
 }) async {
   final sections = {
     for (final zone in DeckZone.values)
-      zone: entries.where((e) => e.zone == zone).toList(),
+      zone: entries.where((e) => e.zone == zone).toList()
+        ..sort(compareDeckEntries),
   };
   final columns = sections.values
       .map((cards) => cards.length)
