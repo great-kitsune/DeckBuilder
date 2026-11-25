@@ -1,6 +1,7 @@
 import 'dart:io';
 import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:package_info_plus/package_info_plus.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 import 'catalog.dart';
@@ -535,6 +536,7 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
                               ),
                             ),
                           ),
+                          const AppVersionTile(),
                           ListTile(
                             title: const Text('마지막 업데이트'),
                             subtitle: Text(library.updated ?? '설치 전'),
@@ -655,5 +657,27 @@ class InstallDialog extends StatelessWidget {
         child: const Text('확인'),
       ),
     ],
+  );
+}
+
+class AppVersionTile extends StatefulWidget {
+  const AppVersionTile({super.key});
+  @override
+  State<AppVersionTile> createState() => _AppVersionTileState();
+}
+
+class _AppVersionTileState extends State<AppVersionTile> {
+  late final info = PackageInfo.fromPlatform();
+  @override
+  Widget build(BuildContext context) => FutureBuilder<PackageInfo>(
+    future: info,
+    builder: (context, snapshot) => ListTile(
+      title: const Text('앱 버전'),
+      subtitle: Text(
+        snapshot.data == null
+            ? (snapshot.hasError ? '확인할 수 없습니다' : '확인 중…')
+            : '${snapshot.data!.version} · 빌드 ${snapshot.data!.buildNumber}',
+      ),
+    ),
   );
 }
