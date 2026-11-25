@@ -25,6 +25,15 @@ class SyncCounts {
 extension CatalogDelta on Catalog {
   // Called inside the publication transaction, with the validated stage attached.
   SyncCounts countIncoming(bool full) {
+    for (final table in ['editions', 'retired_editions']) {
+      if (db
+          .select(
+            'SELECT 1 FROM incoming.editions s JOIN main.$table e USING(id) WHERE e.card<>s.card LIMIT 1',
+          )
+          .isNotEmpty) {
+        throw const FormatException('기존 인쇄판 UUID가 다른 카드에 연결되었습니다.');
+      }
+    }
     int count(String sql) =>
         db.select('SELECT count(*) n FROM $sql').single['n'] as int;
     const cards = 'incoming.cards s LEFT JOIN main.cards c ON c.id=s.id';
@@ -56,14 +65,6 @@ extension CatalogDelta on Catalog {
     try {
       transaction(() {
         final counts = countIncoming(false);
-        // An Edition UUID may never move between card UUIDs.
-        if (db
-            .select(
-              'SELECT 1 FROM incoming.editions s JOIN main.editions e USING(id) WHERE e.card<>s.card LIMIT 1',
-            )
-            .isNotEmpty) {
-          throw const FormatException('인쇄판의 카드 소유자가 변경되었습니다.');
-        }
         db.execute("""
           INSERT OR REPLACE INTO retired_editions SELECT e.id,e.card,e.payload FROM main.editions e
             JOIN incoming.cards c ON c.id=e.card WHERE NOT EXISTS(SELECT 1 FROM incoming.editions s WHERE s.id=e.id);

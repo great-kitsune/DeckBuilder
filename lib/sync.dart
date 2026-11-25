@@ -15,9 +15,10 @@ part 'sync_validation.dart';
 
 class OfficialApi {
   final http.Client client;
-  int requests = 0, bytes = 0;
   OfficialApi(this.client);
   void guard() {}
+  void beforeAttempt() => guard();
+  void received(int bytes) {}
   Future<void> indexReady(String hash, String? baseline) async {}
   Future<void> beginFull() async {}
   Future<dynamic> detail(String path, Json? candidate) => read(path);
@@ -27,11 +28,8 @@ class OfficialApi {
     final response = await getFromApi(
       client,
       uri,
-      beforeAttempt: () {
-        guard();
-        requests++;
-      },
-      received: (n) => bytes += n,
+      beforeAttempt: beforeAttempt,
+      received: received,
     );
     guard();
     return jsonDecode(utf8.decode(response.bodyBytes));
@@ -51,7 +49,9 @@ Future<void> collect(
   void insert(Json card) {
     validateCard(card);
     final id = card['uuid'] as String;
-    if (!missing.containsKey(id) || !seen.add(id)) {
+    if (!missing.containsKey(id) ||
+        (card['slug'] != null && card['slug'] != index[id]) ||
+        !seen.add(id)) {
       throw const SyncProblem(
         'index_mismatch',
         '공식 카드 목록의 UUID가 중복되거나 일치하지 않습니다.',
@@ -69,9 +69,13 @@ Future<void> collect(
       for (final raw in printing['other_orientations'] as List? ?? []) {
         final face = Json.of(raw as Json);
         final id = face['uuid'] as String;
+        if (!index.containsKey(id)) {
+          throw const SyncProblem('index_mismatch', '양면 카드가 공식 인덱스에 없습니다.');
+        }
         final edition = face.remove('edition') as Json;
         face.remove('edition_id');
-        if (faces.containsKey(id) && jsonEncode(faces[id]) != jsonEncode(face)) {
+        if (faces.containsKey(id) &&
+            jsonEncode(faces[id]) != jsonEncode(face)) {
           invalidData('양면 카드 정보가 충돌했습니다.');
         }
         final known = facePrints[id]?[edition['uuid']];
@@ -90,11 +94,13 @@ Future<void> collect(
     'sort': 'name',
   });
   int? totalPages;
+  int? expectedCount;
   for (var page = 1; ; page++) {
     final result = await pageData(page) as Json;
     totalPages ??= result['total_pages'] as int;
     final rows = result['data'] as List;
-    validatePage(result, page, totalPages, rows);
+    expectedCount ??= result['total_cards'] as int?;
+    validatePage(result, page, totalPages, rows, expectedCount);
     if (result['page'] != page ||
         result['total_pages'] != totalPages ||
         totalPages < page ||
@@ -172,6 +178,7 @@ Future<Map<String, Json>> changedPages(
 ) async {
   final found = <String, Json>{};
   int? pages;
+  int? expectedCount;
   for (var page = 1; ; page++) {
     final data = await api.read('/cards/search', {
       filter: date,
@@ -187,7 +194,8 @@ Future<Map<String, Json>> changedPages(
     }
     final rows = data['data'] as List;
     pages ??= data['total_pages'] as int;
-    validatePage(data, page, pages, rows);
+    expectedCount ??= data['total_cards'] as int?;
+    validatePage(data, page, pages, rows, expectedCount);
     if (pages == 0 && rows.isEmpty && page == 1) return found;
     if (data['total_pages'] != pages ||
         pages < page ||
@@ -206,7 +214,13 @@ Future<Map<String, Json>> changedPages(
       }
       found[row['uuid']] = row;
     }
-    progress(SyncPhase.fetching_changes, page, pages);
+    progress(
+      filter == 'last_update'
+          ? SyncPhase.fetching_card_changes
+          : SyncPhase.fetching_edition_changes,
+      page,
+      pages,
+    );
     if (page == pages) return found;
   }
 }
@@ -228,6 +242,9 @@ Future<void> synchronize(
   progress(SyncPhase.checking, 0, null);
   final health = live.inspect(resolveSpoilers: false);
   final state = live.baseline;
+  final safeSince =
+      live.metadata('syncSafeSince') ??
+      state?['last_successful_sync'] as String?;
   var full =
       mode != SyncMode.incremental ||
       state == null ||
@@ -237,7 +254,17 @@ Future<void> synchronize(
     for (final r in live.db.select('SELECT id,slug FROM sync_index'))
       r['id'] as String: r['slug'] as String,
   };
-  if (state != null && indexDigest(known) != state['index_hash']) full = true;
+  final installed = {
+    for (final r in live.db.select(
+      "SELECT id,json_extract(payload,'\$.slug') slug FROM cards WHERE active=1",
+    ))
+      r['id'] as String: r['slug'] as String?,
+  };
+  if (state != null &&
+      (indexDigest(known) != state['index_hash'] ||
+          installed.keys.any((id) => !known.containsKey(id)))) {
+    full = true;
+  }
   for (var attempt = 0; attempt < 2; attempt++) {
     stage.db.execute(
       'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
@@ -245,7 +272,7 @@ Future<void> synchronize(
     progress(SyncPhase.fetching_index, 0, null);
     final index = await readIndex(api);
     final digest = indexDigest(index);
-    await api.indexReady(digest, state?['last_successful_sync'] as String?);
+    await api.indexReady(digest, safeSince);
     final active =
         live.db
                 .select('SELECT count(*) n FROM cards WHERE active=1')
@@ -261,7 +288,7 @@ Future<void> synchronize(
     if (known.keys.any((id) => !index.containsKey(id))) full = true;
     if (!full) {
       try {
-        final date = DateTime.parse(state!['last_successful_sync'] as String)
+        final date = DateTime.parse(safeSince!)
             .toUtc()
             .subtract(const Duration(days: 2))
             .toIso8601String()
@@ -277,7 +304,10 @@ Future<void> synchronize(
           ...cards.keys,
           ...editions.keys,
           for (final id in index.keys)
-            if (index[id] != known[id]) id,
+            if (index[id] != known[id] ||
+                !installed.containsKey(id) ||
+                (installed[id] != null && installed[id] != index[id]))
+              id,
         };
         if (ids.length >= index.length * fullThreshold ||
             !ids.every(index.containsKey)) {
@@ -292,6 +322,7 @@ Future<void> synchronize(
             );
             if (detail is! Json ||
                 detail['uuid'] != id ||
+                (detail['slug'] != null && detail['slug'] != index[id]) ||
                 detail['editions'] is! List) {
               throw const SyncProblem(
                 'index_mismatch',
@@ -343,7 +374,7 @@ Future<void> synchronize(
       );
     }
     progress(SyncPhase.validating, 0, null);
-    stage.recordManifest();
+    stage.transaction(stage.recordManifest);
     final check = stage.inspect(resolveSpoilers: false);
     if (check.damaged + check.missing > 0) {
       throw const SyncProblem('invalid_response', '임시 카드 데이터 검증 실패');
@@ -373,9 +404,11 @@ Future<void> synchronize(
           insert.close();
         }
       }
+      final finished = syncNow();
+      live.setMetadata('syncSafeSince', started);
       live.db.execute('INSERT OR REPLACE INTO sync_state VALUES(1,?,?,?)', [
-        started,
-        full ? started : state?['last_full'],
+        finished,
+        full ? finished : state?['last_full'],
         digest,
       ]);
       finish(counts, full, clock.elapsedMilliseconds);
@@ -452,7 +485,9 @@ Future<void> updateCatalog(
         directory.createSync(recursive: true);
         final db = sqlite3.open(file);
         try {
-          if (db.select('PRAGMA quick_check').single.values.first != 'ok') {
+          if (db
+              .select('PRAGMA quick_check')
+              .any((row) => row.values.first != 'ok')) {
             throw const FormatException('임시 DB 손상');
           }
           return Catalog(db);
@@ -462,7 +497,6 @@ Future<void> updateCatalog(
         }
       }
 
-      CheckpointApi? api;
       try {
         late Catalog stage;
         try {
@@ -475,7 +509,7 @@ Future<void> updateCatalog(
           stage = openStage();
         }
         try {
-          api = CheckpointApi(
+          final transport = CheckpointApi(
             httpClient,
             live,
             stage.db,
@@ -484,7 +518,6 @@ Future<void> updateCatalog(
             job['started_at'] as String,
             requested,
           );
-          final transport = api;
           await synchronize(
             live,
             stage,
@@ -500,11 +533,9 @@ Future<void> updateCatalog(
             (counts, full, ms) {
               transport.guard();
               live.db.execute(
-                '''UPDATE sync_jobs SET requests=requests+?,bytes=bytes+?,fallback=?,added_cards=?,
+                '''UPDATE sync_jobs SET fallback=?,added_cards=?,
                 changed_cards=?,added_editions=?,changed_editions=?,removed_cards=?,apply_ms=? WHERE id=?''',
                 [
-                  transport.requests,
-                  transport.bytes,
                   requested == SyncMode.incremental && full,
                   counts.addedCards,
                   counts.changedCards,
@@ -526,10 +557,6 @@ Future<void> updateCatalog(
         final problem = classifySyncError(e);
         final paused = problem.transient;
         live.transaction(() {
-          live.db.execute(
-            'UPDATE sync_jobs SET requests=requests+?,bytes=bytes+? WHERE id=?',
-            [api?.requests ?? 0, api?.bytes ?? 0, id],
-          );
           live.endSync(
             id,
             paused ? SyncStatus.paused : SyncStatus.failed,
