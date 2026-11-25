@@ -6,6 +6,7 @@ import 'package:crypto/crypto.dart';
 
 part 'integrity.dart';
 part 'sync_state.dart';
+part 'catalog_delta.dart';
 part 'decks.dart';
 part 'deck_sort.dart';
 part 'deck_recipe.dart';
@@ -396,10 +397,11 @@ class Catalog {
   }
 
   // Stage is a closed, independently validated SQLite file on the same device.
-  void publish(String stage) {
+  void publish(String stage, {void Function()? beforeApply, void Function()? afterApply}) {
     db.execute('ATTACH DATABASE ? AS incoming', [stage]);
     try {
       transaction(() {
+        beforeApply?.call();
         db.execute(
           '''INSERT OR REPLACE INTO retired_editions SELECT e.id,e.card,e.payload FROM editions e
           JOIN cards c ON c.id=e.card WHERE c.spoiler=0 AND e.id NOT IN (SELECT id FROM incoming.editions)''',
@@ -425,6 +427,7 @@ class Catalog {
         db.execute("INSERT OR REPLACE INTO metadata VALUES('updated',?)", [
           DateTime.now().toUtc().toIso8601String(),
         ]);
+        afterApply?.call();
       });
     } finally {
       db.execute('DETACH DATABASE incoming');

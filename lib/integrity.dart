@@ -38,7 +38,7 @@ extension CatalogIntegrity on Catalog {
   IntegrityResult inspect({bool resolveSpoilers = true}) {
     var missing = 0, damaged = 0, replaced = 0;
     final hasManifest = metadata('hasManifest') == '1';
-    transaction(() {
+    void verify() {
       damaged += db
           .select('PRAGMA integrity_check')
           .where((r) => r.values.first != 'ok')
@@ -77,7 +77,8 @@ extension CatalogIntegrity on Catalog {
       if (resolveSpoilers && damaged == 0 && missing == 0) {
         replaced = reconcileSpoilers();
       }
-    });
+    }
+    if (db.autocommit) {transaction(verify);} else {verify();}
     return (
       missing: missing,
       damaged: damaged,

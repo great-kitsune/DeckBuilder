@@ -63,13 +63,15 @@ void main() {
       });
       catalog.setMetadata('imageMode', 'full');
       for (var i = 0; i < 2; i++) {
-        await updateCatalog(path, (_) {}, client: client);
+        await updateCatalog(path, (_) {}, client: client, mode: SyncMode.full);
       }
       expect(requests, [
         '/cards/all',
         '/cards/search',
         '/cards/all',
+        '/cards/all',
         '/cards/search',
+        '/cards/all',
       ]);
       expect(catalog.inspect(), (
         missing: 0,
