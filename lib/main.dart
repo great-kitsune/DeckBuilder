@@ -421,7 +421,8 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
                         ? null
                         : (job['completed'] as int) / (job['total'] as int),
                   ),
-                if (job != null && job['phase'] != 'applying')
+                if (job != null &&
+                    (job['phase'] != 'applying' || job['status'] != 'running'))
                   TextButton(
                     onPressed: () async {
                       await cancelSync(path, library, job['id'] as String);

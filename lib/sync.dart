@@ -51,7 +51,9 @@ Future<void> collect(
   void insert(Json card) {
     validateCard(card);
     final id = card['uuid'] as String;
-    if (!missing.containsKey(id) || !seen.add(id)) {
+    if (!missing.containsKey(id) ||
+        (card['slug'] != null && card['slug'] != index[id]) ||
+        !seen.add(id)) {
       throw const SyncProblem(
         'index_mismatch',
         '공식 카드 목록의 UUID가 중복되거나 일치하지 않습니다.',
@@ -69,6 +71,9 @@ Future<void> collect(
       for (final raw in printing['other_orientations'] as List? ?? []) {
         final face = Json.of(raw as Json);
         final id = face['uuid'] as String;
+        if (!index.containsKey(id)) {
+          throw const SyncProblem('index_mismatch', '양면 카드가 공식 인덱스에 없습니다.');
+        }
         final edition = face.remove('edition') as Json;
         face.remove('edition_id');
         if (faces.containsKey(id) &&
@@ -91,11 +96,13 @@ Future<void> collect(
     'sort': 'name',
   });
   int? totalPages;
+  int? expectedCount;
   for (var page = 1; ; page++) {
     final result = await pageData(page) as Json;
     totalPages ??= result['total_pages'] as int;
     final rows = result['data'] as List;
-    validatePage(result, page, totalPages, rows);
+    expectedCount ??= result['total_cards'] as int?;
+    validatePage(result, page, totalPages, rows, expectedCount);
     if (result['page'] != page ||
         result['total_pages'] != totalPages ||
         totalPages < page ||
@@ -173,6 +180,7 @@ Future<Map<String, Json>> changedPages(
 ) async {
   final found = <String, Json>{};
   int? pages;
+  int? expectedCount;
   for (var page = 1; ; page++) {
     final data = await api.read('/cards/search', {
       filter: date,
@@ -188,7 +196,8 @@ Future<Map<String, Json>> changedPages(
     }
     final rows = data['data'] as List;
     pages ??= data['total_pages'] as int;
-    validatePage(data, page, pages, rows);
+    expectedCount ??= data['total_cards'] as int?;
+    validatePage(data, page, pages, rows, expectedCount);
     if (pages == 0 && rows.isEmpty && page == 1) return found;
     if (data['total_pages'] != pages ||
         pages < page ||
@@ -247,7 +256,17 @@ Future<void> synchronize(
     for (final r in live.db.select('SELECT id,slug FROM sync_index'))
       r['id'] as String: r['slug'] as String,
   };
-  if (state != null && indexDigest(known) != state['index_hash']) full = true;
+  final installed = {
+    for (final r in live.db.select(
+      "SELECT id,json_extract(payload,'\$.slug') slug FROM cards WHERE active=1",
+    ))
+      r['id'] as String: r['slug'] as String?,
+  };
+  if (state != null &&
+      (indexDigest(known) != state['index_hash'] ||
+          installed.keys.any((id) => !known.containsKey(id)))) {
+    full = true;
+  }
   for (var attempt = 0; attempt < 2; attempt++) {
     stage.db.execute(
       'DELETE FROM tags; DELETE FROM editions; DELETE FROM cards;',
@@ -287,7 +306,10 @@ Future<void> synchronize(
           ...cards.keys,
           ...editions.keys,
           for (final id in index.keys)
-            if (index[id] != known[id]) id,
+            if (index[id] != known[id] ||
+                !installed.containsKey(id) ||
+                (installed[id] != null && installed[id] != index[id]))
+              id,
         };
         if (ids.length >= index.length * fullThreshold ||
             !ids.every(index.containsKey)) {
@@ -302,6 +324,7 @@ Future<void> synchronize(
             );
             if (detail is! Json ||
                 detail['uuid'] != id ||
+                (detail['slug'] != null && detail['slug'] != index[id]) ||
                 detail['editions'] is! List) {
               throw const SyncProblem(
                 'index_mismatch',
@@ -464,7 +487,9 @@ Future<void> updateCatalog(
         directory.createSync(recursive: true);
         final db = sqlite3.open(file);
         try {
-          if (db.select('PRAGMA quick_check').single.values.first != 'ok') {
+          if (db
+              .select('PRAGMA quick_check')
+              .any((row) => row.values.first != 'ok')) {
             throw const FormatException('임시 DB 손상');
           }
           return Catalog(db);

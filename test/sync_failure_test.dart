@@ -110,6 +110,7 @@ void main() {
     for (final problem in [
       'malformed',
       'duplicate',
+      'reassigned',
       'parent',
       'pagination',
       'shrink',
@@ -150,6 +151,11 @@ void main() {
             }
             if (r.url.path != '/cards/search') return res;
             if (problem == 'malformed') return http.Response('{', 200);
+            if (problem == 'reassigned') {
+              final first = data['data'][0]['editions'];
+              data['data'][0]['editions'] = data['data'][1]['editions'];
+              data['data'][1]['editions'] = first;
+            }
             if (problem == 'duplicate') data['data'][1] = data['data'][0];
             if (problem == 'parent') {
               data['data'][0]['editions'][0]['card_id'] = 'wrong';

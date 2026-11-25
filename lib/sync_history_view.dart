@@ -185,7 +185,9 @@ class _SyncControlsState extends State<SyncControls> {
                 : '${jobLabel(row)}\n${syncTime(row['updated_at'])}',
           ),
           trailing:
-              row != null && (active || resumable) && row['phase'] != 'applying'
+              row != null &&
+                  (active || resumable) &&
+                  (resumable || row['phase'] != 'applying')
               ? TextButton(
                   onPressed: () => widget.cancel(row['id'] as String),
                   child: const Text('취소'),
