@@ -71,7 +71,8 @@ Future<void> collect(
         final id = face['uuid'] as String;
         final edition = face.remove('edition') as Json;
         face.remove('edition_id');
-        if (faces.containsKey(id) && jsonEncode(faces[id]) != jsonEncode(face)) {
+        if (faces.containsKey(id) &&
+            jsonEncode(faces[id]) != jsonEncode(face)) {
           invalidData('양면 카드 정보가 충돌했습니다.');
         }
         final known = facePrints[id]?[edition['uuid']];
@@ -206,7 +207,13 @@ Future<Map<String, Json>> changedPages(
       }
       found[row['uuid']] = row;
     }
-    progress(SyncPhase.fetching_changes, page, pages);
+    progress(
+      filter == 'last_update'
+          ? SyncPhase.fetching_card_changes
+          : SyncPhase.fetching_edition_changes,
+      page,
+      pages,
+    );
     if (page == pages) return found;
   }
 }
@@ -228,6 +235,9 @@ Future<void> synchronize(
   progress(SyncPhase.checking, 0, null);
   final health = live.inspect(resolveSpoilers: false);
   final state = live.baseline;
+  final safeSince =
+      live.metadata('syncSafeSince') ??
+      state?['last_successful_sync'] as String?;
   var full =
       mode != SyncMode.incremental ||
       state == null ||
@@ -245,7 +255,7 @@ Future<void> synchronize(
     progress(SyncPhase.fetching_index, 0, null);
     final index = await readIndex(api);
     final digest = indexDigest(index);
-    await api.indexReady(digest, state?['last_successful_sync'] as String?);
+    await api.indexReady(digest, safeSince);
     final active =
         live.db
                 .select('SELECT count(*) n FROM cards WHERE active=1')
@@ -261,7 +271,7 @@ Future<void> synchronize(
     if (known.keys.any((id) => !index.containsKey(id))) full = true;
     if (!full) {
       try {
-        final date = DateTime.parse(state!['last_successful_sync'] as String)
+        final date = DateTime.parse(safeSince!)
             .toUtc()
             .subtract(const Duration(days: 2))
             .toIso8601String()
@@ -373,9 +383,11 @@ Future<void> synchronize(
           insert.close();
         }
       }
+      final finished = syncNow();
+      live.setMetadata('syncSafeSince', started);
       live.db.execute('INSERT OR REPLACE INTO sync_state VALUES(1,?,?,?)', [
-        started,
-        full ? started : state?['last_full'],
+        finished,
+        full ? finished : state?['last_full'],
         digest,
       ]);
       finish(counts, full, clock.elapsedMilliseconds);
