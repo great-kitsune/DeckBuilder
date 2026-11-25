@@ -45,7 +45,12 @@ Future<void> clearCardImages() async {
 
 Future<bool> decodableImage(Uint8List data) async {
   try {
-    final codec = await ui.instantiateImageCodec(data, targetWidth: 1);
+    // Keep both decode dimensions nonzero even for wide banner artwork.
+    final codec = await ui.instantiateImageCodec(
+      data,
+      targetWidth: 1,
+      targetHeight: 1,
+    );
     try {
       (await codec.getNextFrame()).image.dispose();
     } finally {

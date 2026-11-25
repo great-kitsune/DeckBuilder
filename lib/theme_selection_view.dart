@@ -6,7 +6,12 @@ import 'theme_repository.dart';
 class ThemeSelectionView extends StatefulWidget {
   final Catalog catalog;
   final ValueNotifier<SelectedGraphic?> selected;
-  final Future<SelectedGraphic> Function(Catalog, GraphicTheme) select;
+  final Future<SelectedGraphic> Function(
+    Catalog,
+    GraphicTheme, {
+    required ThemeArt preferred,
+  })
+  select;
   const ThemeSelectionView(
     this.catalog,
     this.selected, {
@@ -29,7 +34,12 @@ class _ThemeSelectionViewState extends State<ThemeSelectionView> {
         resetGraphicTheme(widget.catalog);
         widget.selected.value = null;
       } else {
-        widget.selected.value = await widget.select(widget.catalog, item);
+        final size = MediaQuery.sizeOf(context);
+        widget.selected.value = await widget.select(
+          widget.catalog,
+          item,
+          preferred: ThemeArt.forWindow(size.width, size.height),
+        );
       }
     } catch (e) {
       if (mounted) {
@@ -76,7 +86,7 @@ class _ThemeSelectionViewState extends State<ThemeSelectionView> {
                   !candidates.any(
                     (c) =>
                         c.edition == selected.edition &&
-                        c.path == selected.path,
+                        c.files.values.any((f) => f.path == selected.path),
                   ))
                 ListTile(
                   title: const Text('사용 중인 저장된 테마'),
@@ -111,7 +121,9 @@ class _ThemeSelectionViewState extends State<ThemeSelectionView> {
                             subtitle: Text(item.printing),
                             trailing:
                                 selected?.edition == item.edition &&
-                                    selected?.path == item.path
+                                    item.files.values.any(
+                                      (f) => f.path == selected?.path,
+                                    )
                                 ? const Icon(Icons.check)
                                 : null,
                             onTap: busy ? null : () => choose(item),

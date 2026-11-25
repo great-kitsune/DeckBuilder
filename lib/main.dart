@@ -17,6 +17,7 @@ import 'sync_labels.dart';
 import 'sync_history_view.dart';
 import 'package:workmanager/workmanager.dart';
 import 'theme_repository.dart';
+import 'theme_background.dart';
 import 'theme_selection_view.dart';
 
 void main() => runApp(const DeckBuilder());
@@ -68,14 +69,7 @@ class _DeckBuilderState extends State<DeckBuilder> {
               fit: StackFit.expand,
               children: [
                 if (graphic != null) ...[
-                  Image.memory(
-                    graphic.image,
-                    fit: BoxFit.cover,
-                    cacheWidth: 800,
-                    excludeFromSemantics: true,
-                    errorBuilder: (_, _, _) =>
-                        ColoredBox(color: base.colorScheme.surface),
-                  ),
+                  ThemeBackground(graphic),
                   ColoredBox(
                     color: Colors.black.withValues(alpha: graphic.overlay),
                   ),
@@ -248,7 +242,6 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
       if (['queued', 'running'].contains(catalog.job(id)?['status'])) {
         await recoverWorker();
       }
-
     }
     if (mounted) readProgress();
   }
