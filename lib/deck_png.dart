@@ -6,6 +6,7 @@ import 'package:file_picker/file_picker.dart';
 import 'package:flutter/painting.dart';
 import 'card_image.dart';
 import 'catalog.dart';
+import 'material_png_order.dart';
 
 const _cardWidth = 248.0;
 const _cardHeight = 348.0;
@@ -156,6 +157,10 @@ Future<Uint8List> renderDeckPng(
       zone: entries.where((e) => e.zone == zone).toList()
         ..sort(compareDeckEntries),
   };
+  sections[DeckZone.material] = materialPngOrder(
+    catalog,
+    sections[DeckZone.material]!,
+  );
   final columns = sections.values
       .map((cards) => cards.length)
       .reduce(math.max)
