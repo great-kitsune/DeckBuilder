@@ -159,7 +159,7 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
     final lock = await SyncLock.acquire(path);
     if (lock == null) return;
     try {
-      if (catalog.job(id)?['status'] == row['status']) {
+      if (mounted && catalog.job(id)?['status'] == row['status']) {
         catalog.transaction(
           () => catalog.endSync(
             id,
@@ -176,7 +176,18 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState state) {
-    if (state == AppLifecycleState.resumed && store != null) readProgress();
+    if (state == AppLifecycleState.resumed && store != null) {
+      unawaited(refreshWorkerOnResume());
+    }
+  }
+
+  Future<void> refreshWorkerOnResume() async {
+    try {
+      await recoverWorker();
+      if (mounted) readProgress();
+    } catch (_) {
+      if (mounted) setState(() => status = '다운로드 상태를 확인할 수 없습니다.');
+    }
   }
 
   Future<void> update({bool full = false}) async {
@@ -233,14 +244,10 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
       }
     } catch (_) {
       if (!mounted) return;
-      if (catalog.job(id)?['status'] == 'queued') {
-        catalog.endSync(
-          id,
-          SyncStatus.interrupted,
-          code: 'interrupted',
-          message: '작업을 시작할 수 없습니다. 재개하세요.',
-        );
+      if (['queued', 'running'].contains(catalog.job(id)?['status'])) {
+        await recoverWorker();
       }
+
     }
     if (mounted) readProgress();
   }
