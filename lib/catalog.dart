@@ -397,7 +397,11 @@ class Catalog {
   }
 
   // Stage is a closed, independently validated SQLite file on the same device.
-  void publish(String stage, {void Function()? beforeApply, void Function()? afterApply}) {
+  void publish(
+    String stage, {
+    void Function()? beforeApply,
+    void Function()? afterApply,
+  }) {
     db.execute('ATTACH DATABASE ? AS incoming', [stage]);
     try {
       transaction(() {

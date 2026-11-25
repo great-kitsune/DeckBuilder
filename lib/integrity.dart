@@ -78,7 +78,12 @@ extension CatalogIntegrity on Catalog {
         replaced = reconcileSpoilers();
       }
     }
-    if (db.autocommit) {transaction(verify);} else {verify();}
+
+    if (db.autocommit) {
+      transaction(verify);
+    } else {
+      verify();
+    }
     return (
       missing: missing,
       damaged: damaged,
