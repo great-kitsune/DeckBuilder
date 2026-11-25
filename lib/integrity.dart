@@ -35,7 +35,7 @@ extension CatalogIntegrity on Catalog {
     setMetadata('hasManifest', '1');
   }
 
-  IntegrityResult inspect() {
+  IntegrityResult inspect({bool resolveSpoilers = true}) {
     var missing = 0, damaged = 0, replaced = 0;
     final hasManifest = metadata('hasManifest') == '1';
     transaction(() {
@@ -74,7 +74,9 @@ extension CatalogIntegrity on Catalog {
         }
         missing += expected.length;
       }
-      if (damaged == 0 && missing == 0) replaced = reconcileSpoilers();
+      if (resolveSpoilers && damaged == 0 && missing == 0) {
+        replaced = reconcileSpoilers();
+      }
     });
     return (
       missing: missing,

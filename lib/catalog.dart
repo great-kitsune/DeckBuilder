@@ -29,11 +29,26 @@ class Filters {
   final all = <String>{};
 }
 
+const catalogSchemaVersion = 1;
+
 class Catalog {
   final Database db;
   Catalog(this.db) {
     db.execute('PRAGMA busy_timeout=5000');
     db.execute('PRAGMA foreign_keys=ON');
+    final version = db.userVersion;
+    if (version > catalogSchemaVersion) {
+      throw const FormatException('더 새로운 DB 버전입니다. 앱을 업데이트하세요.');
+    }
+    if (version == 0) {
+      transaction(() {
+        _migrateLegacy();
+        db.userVersion = catalogSchemaVersion;
+      });
+    }
+  }
+
+  void _migrateLegacy() {
     for (final prefix in ['', 'spoiler_']) {
       db.execute('''
       CREATE TABLE IF NOT EXISTS ${prefix}cards(
@@ -73,16 +88,14 @@ class Catalog {
     if (!db
         .select('PRAGMA table_info(editions)')
         .any((r) => r['name'] == 'position')) {
-      transaction(() {
-        db.execute(
-          'ALTER TABLE editions ADD COLUMN position INTEGER NOT NULL DEFAULT 0',
-        );
-        db.execute(
-          '''WITH ordinals AS MATERIALIZED (
+      db.execute(
+        'ALTER TABLE editions ADD COLUMN position INTEGER NOT NULL DEFAULT 0',
+      );
+      db.execute(
+        '''WITH ordinals AS MATERIALIZED (
           SELECT id, row_number() OVER (PARTITION BY card ORDER BY rowid)-1 AS n FROM editions
         ) UPDATE editions SET position=(SELECT n FROM ordinals WHERE ordinals.id=editions.id)''',
-        );
-      });
+      );
     }
     db.execute(
       'CREATE INDEX IF NOT EXISTS edition_order ON editions(card,position)',
@@ -94,8 +107,7 @@ class Catalog {
       CREATE TABLE IF NOT EXISTS install_manifest(kind TEXT, id TEXT, digest TEXT NOT NULL, PRIMARY KEY(kind,id));
     ''');
     if (db.select('SELECT 1 FROM cards WHERE spoiler=1 LIMIT 1').isNotEmpty) {
-      transaction(() {
-        db.execute('''
+      db.execute('''
           INSERT INTO spoiler_cards SELECT * FROM cards WHERE spoiler=1;
           INSERT INTO spoiler_editions SELECT e.* FROM editions e JOIN cards c ON c.id=e.card WHERE c.spoiler=1;
           INSERT INTO spoiler_tags SELECT t.* FROM tags t JOIN cards c ON c.id=t.card WHERE c.spoiler=1;
@@ -103,8 +115,7 @@ class Catalog {
           DELETE FROM editions WHERE card IN (SELECT id FROM cards WHERE spoiler=1);
           DELETE FROM cards WHERE spoiler=1;
         ''');
-        reconcileSpoilers();
-      });
+      reconcileSpoilers();
     }
   }
 

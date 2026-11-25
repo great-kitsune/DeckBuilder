@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:sqlite3/sqlite3.dart' show sqlite3;
 import 'catalog.dart';
+import 'backup_view.dart';
 import 'deck_editor.dart';
 import 'card_image.dart';
 import 'search_view.dart';
@@ -331,6 +332,27 @@ class _LibraryState extends State<Library> {
                       ListView(
                         padding: const EdgeInsets.all(20),
                         children: [
+                          ListTile(
+                            title: const Text('데이터 관리'),
+                            subtitle: const Text('사용자 데이터 및 전체 DB 백업·복원'),
+                            onTap: busy
+                                ? null
+                                : () => Navigator.push<void>(
+                                    context,
+                                    MaterialPageRoute(
+                                      builder: (_) =>
+                                          BackupView(library, path, () {
+                                            if (mounted) {
+                                              setState(() {
+                                                lastUpdated = library.updated;
+                                                status = '';
+                                                revision.value++;
+                                              });
+                                            }
+                                          }),
+                                    ),
+                                  ),
+                          ),
                           ListTile(
                             title: const Text('마지막 업데이트'),
                             subtitle: Text(library.updated ?? '설치 전'),
