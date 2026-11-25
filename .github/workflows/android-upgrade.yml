@@ -1,0 +1,54 @@
+name: Android in-place upgrade test
+on:
+  pull_request:
+    paths:
+      - 'android/app/build.gradle.kts'
+      - '.github/workflows/android-release.yml'
+      - '.github/workflows/android-upgrade.yml'
+      - '.github/scripts/upgrade_smoke.py'
+permissions:
+  contents: read
+jobs:
+  upgrade:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          path: current
+          persist-credentials: false
+      - uses: actions/checkout@v4
+        with:
+          path: previous
+          ref: 23ecbafbff216c445dd6e6c869e392514a75afea
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+      - name: Build the prior release-mode app with its existing CI debug identity
+        working-directory: previous
+        run: flutter build apk --release --build-number=1001
+      - name: Build the upgrade and sign with the same disposable CI identity
+        working-directory: current
+        run: |
+          flutter build apk --release --build-number=1002
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/zipalign" -P 16 -f 4 build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" sign --ks ~/.android/debug.keystore --ks-key-alias androiddebugkey --ks-pass pass:android --key-pass pass:android --out "$RUNNER_TEMP/upgrade.apk" "$RUNNER_TEMP/aligned.apk"
+          "$tools/apksigner" verify "$RUNNER_TEMP/upgrade.apk"
+      - name: Enable KVM
+        run: |
+          echo 'KERNEL=="kvm", GROUP="kvm", MODE="0666", OPTIONS+="static_node=kvm"' | sudo tee /etc/udev/rules.d/99-kvm4all.rules
+          sudo udevadm control --reload-rules
+          sudo udevadm trigger --name-match=kvm
+      - uses: reactivecircus/android-emulator-runner@v2
+        with:
+          api-level: 31
+          target: google_apis
+          arch: x86_64
+          disable-animations: true
+          script: python3 current/.github/scripts/upgrade_smoke.py previous/build/app/outputs/flutter-apk/app-release.apk "$RUNNER_TEMP/upgrade.apk"
