@@ -1,5 +1,7 @@
 import 'dart:convert';
 import 'dart:io';
+import 'dart:ui' as ui;
+import 'package:deck_builder/card_image.dart' show decodableImage;
 import 'package:deck_builder/backup_service.dart';
 import 'package:deck_builder/catalog.dart';
 import 'package:deck_builder/theme_repository.dart';
@@ -63,6 +65,25 @@ void seed(Catalog c) {
 }
 
 void main() {
+  testWidgets('validates landscape artwork at the official wide banner ratio', (
+    tester,
+  ) async {
+    await tester.runAsync(() async {
+      final recorder = ui.PictureRecorder();
+      ui.Canvas(
+        recorder,
+      ).drawColor(const ui.Color(0xff4488cc), ui.BlendMode.src);
+      final picture = recorder.endRecording();
+      final image = await picture.toImage(800, 300);
+      try {
+        final bytes = await image.toByteData(format: ui.ImageByteFormat.png);
+        expect(await decodableImage(bytes!.buffer.asUint8List()), isTrue);
+      } finally {
+        image.dispose();
+        picture.dispose();
+      }
+    });
+  });
   test(
     'candidates require an official banner record, exact edition path and filename',
     () {
