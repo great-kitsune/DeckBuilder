@@ -13,7 +13,6 @@ const _margin = 24.0;
 const _gap = 14.0;
 const _rowHeight = _cardHeight + _gap;
 const deckTitleSize = 160.0;
-const deckTotalSize = 110.0;
 const _ink = Color(0xff163b3c);
 
 TextPainter _text(
@@ -170,15 +169,7 @@ Future<Uint8List> renderDeckPng(
     width - 2 * _margin,
     weight: FontWeight.bold,
   );
-  final count = entries.fold(0, (n, e) => n + e.quantity);
-  final totalText = _text(
-    '전체 $count장',
-    deckTotalSize,
-    width - 2 * _margin,
-    weight: FontWeight.bold,
-  );
-  final totalY = _margin + title.height + 8;
-  double y = totalY + totalText.height + 28;
+  double y = _margin + title.height + 28;
   final headers = <DeckZone, TextPainter>{};
   var height = y + _margin;
   for (final group in sections.entries) {
@@ -211,7 +202,6 @@ Future<Uint8List> renderDeckPng(
     ..drawColor(const Color(0xfffafaf6), BlendMode.src);
   try {
     title.paint(canvas, const Offset(_margin, _margin));
-    totalText.paint(canvas, Offset(_margin, totalY));
     for (final group in sections.entries) {
       canvas.drawLine(
         Offset(_margin, y),
@@ -277,7 +267,6 @@ Future<Uint8List> renderDeckPng(
   } finally {
     if (recorder.isRecording) recorder.endRecording().dispose();
     title.dispose();
-    totalText.dispose();
     for (final header in headers.values) {
       header.dispose();
     }
