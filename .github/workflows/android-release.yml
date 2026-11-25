@@ -1,0 +1,68 @@
+name: Android signed release
+on:
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: android-production-release
+  cancel-in-progress: false
+jobs:
+  build:
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.38.7'
+      - run: flutter pub get --enforce-lockfile
+      - run: flutter analyze && flutter test
+      - name: Build unsigned release with an increasing versionCode
+        run: flutter build apk --release --build-number="$((1000 + GITHUB_RUN_NUMBER))"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: unsigned-input
+          path: build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 1
+          if-no-files-found: error
+  sign:
+    needs: build
+    if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    environment: android-production
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: unsigned-input
+      - name: Sign and verify the installed application's identity
+        shell: bash
+        env:
+          KEYSTORE_BASE64: ${{ secrets.ANDROID_KEYSTORE_BASE64 }}
+          STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
+          KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
+          KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          umask 077
+          : "${KEYSTORE_BASE64:?}" "${STORE_PASSWORD:?}" "${KEY_PASSWORD:?}" "${KEY_ALIAS:?}" "${CERT_SHA256:?}"
+          key="$RUNNER_TEMP/distribution.keystore"
+          trap 'rm -f "$key"' EXIT
+          printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$key"
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/zipalign" -P 16 -f 4 app-release.apk aligned.apk
+          "$tools/apksigner" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASSWORD --key-pass env:KEY_PASSWORD --out DeckBuilder-release.apk aligned.apk
+          "$tools/apksigner" verify --verbose --print-certs DeckBuilder-release.apk > "$RUNNER_TEMP/cert.txt"
+          actual=$(sed -n 's/^Signer #1 certificate SHA-256 digest: //p' "$RUNNER_TEMP/cert.txt")
+          test "${actual,,}" = "${CERT_SHA256,,}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: DeckBuilder-Android-release-${{ github.run_number }}
+          path: DeckBuilder-release.apk
+          if-no-files-found: error

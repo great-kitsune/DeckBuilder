@@ -75,3 +75,11 @@ Android는 `flutter devices`에 표시된 기기 ID로 `flutter run -d <기기-I
 설정의 **데이터 관리 → 사용자 데이터 백업**에서 앱 외부에 ZIP을 저장한다. 덱과 선택 인쇄판, 스포일러 사진, 사용자 설정이 포함된다. 공식 카드까지 오프라인에서 복구하려면 **전체 DB 백업**을 선택한다. 재설치 후 같은 종류의 복원을 선택한다. 미설치 카드의 UUID와 수량은 유지되며 공식 DB 설치 후 다시 이름과 인쇄판을 확인할 수 있다.
 
 복원은 기존 데이터를 교체한다. 임시 DB에서 파일 해시, 레코드 수, 참조 및 무결성 검사를 통과한 뒤 요약을 확인하고, 기존 데이터의 복구용 ZIP을 다른 이름으로 저장하면 적용된다. 복구용 파일 저장을 취소하면 교체도 취소된다. ZIP에는 사용자 사진과 덱이 포함되며 암호화되어 있지 않다.
+
+### Android 정식 업데이트 준비
+
+운영자는 GitHub Environment **android-production**을 만든 뒤 배포 브랜치를 **main만 허용**으로 제한하고 승인자를 지정한다. 기존 배포용 키의 Base64를 환경 Secret `ANDROID_KEYSTORE_BASE64`에, 비밀번호·alias를 각각 `ANDROID_STORE_PASSWORD`, `ANDROID_KEY_PASSWORD`, `ANDROID_KEY_ALIAS`에 등록한다. 환경 변수 `ANDROID_CERT_SHA256`에는 기존 배포 인증서 SHA-256 지문(콜론 없이 64자리)을 등록한다. 키는 안전한 별도 장소에도 보관한다.
+
+검토된 변경 병합 후 **Actions → Android signed release → main → Run workflow**로 시작한다. 서명 작업에는 소스 체크아웃이 없으며 검증된 APK만 결과물로 게시한다. 배포 버전명은 pubspec.yaml에서, versionCode는 워크플로 실행 번호 + 1000에서 온다. 재빌드는 새 실행으로 시작한다. 워크플로를 교체하거나 다른 경로에서 배포할 때에는 기존 최고 versionCode보다 큰 번호를 사용한다. PR의 debug APK는 테스트 전용이다.
+
+동일한 applicationId·서명으로 더 높은 버전을 설치하면 Android가 앱 데이터와 DB를 유지한다. 최초 전환 때 서명이 다르면 기존 앱에서 외부 ZIP 백업을 확보한 뒤 재설치한다. **백업 기능이 없는 구버전**은 기존 앱과 같은 키로 서명한 백업 지원 빌드를 먼저 설치해야 앱 안에서 내보낼 수 있다. 실기기에서는 덱·스포일러·설정을 생성한 뒤 서명된 다음 빌드를 `adb install -r`로 설치하고 DB 최종 갱신일, 사진, 설정, 캐시를 확인한다.

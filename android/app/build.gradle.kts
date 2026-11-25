@@ -30,13 +30,10 @@ android {
         versionName = flutter.versionName
     }
 
-    buildTypes {
-        release {
-            // TODO: Add your own signing config for the release build.
-            // Signing with the debug keys for now, so `flutter run --release` works.
-            signingConfig = signingConfigs.getByName("debug")
-        }
-    }
+    // The protected release job signs the aligned APK after the build.
+    // Gradle and PR jobs never receive the distribution key.
+    buildTypes.getByName("release").signingConfig = null
+
 }
 
 flutter {
