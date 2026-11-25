@@ -31,7 +31,7 @@ void main() {
       });
       await expectLater(
         updateCatalog(path, (_) {}, client: unstable, jobId: id),
-        throwsA(isA<Exception>()),
+        throwsA(isA<SyncProblem>()),
       );
       expect(c.job(id)!['status'], 'paused');
       expect(c.job(id)!['completed'], 1);
