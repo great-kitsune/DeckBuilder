@@ -10,6 +10,9 @@ import 'card_image.dart';
 import 'search_view.dart';
 import 'spoiler.dart';
 import 'catalog_job.dart';
+import 'sync.dart';
+import 'sync_lock.dart';
+import 'sync_labels.dart';
 import 'package:workmanager/workmanager.dart';
 import 'theme_repository.dart';
 import 'theme_selection_view.dart';
@@ -91,7 +94,7 @@ class Library extends StatefulWidget {
   State<Library> createState() => _LibraryState();
 }
 
-class _LibraryState extends State<Library> {
+class _LibraryState extends State<Library> with WidgetsBindingObserver {
   Catalog? store;
   late String path;
   int tab = 0;
@@ -99,11 +102,12 @@ class _LibraryState extends State<Library> {
   bool busy = false;
   String status = '';
   Timer? progressTimer;
-  bool checking = false;
+
   String? lastUpdated;
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     open();
   }
 
@@ -117,7 +121,6 @@ class _LibraryState extends State<Library> {
       final library = Catalog(db);
       if (Platform.isAndroid) {
         await Workmanager().initialize(catalogDispatcher);
-        busy = await Workmanager().isScheduledByUniqueName(catalogTask);
       }
       final initialTheme = await readGraphicTheme(library);
       lastUpdated = library.updated;
@@ -128,86 +131,124 @@ class _LibraryState extends State<Library> {
       widget.selected.value = initialTheme;
       setState(() {
         store = library;
-        status = busy
-            ? (library.metadata('downloadStatus') ?? '다운로드 대기 중')
-            : '';
       });
-      if (busy) watchProgress();
+      await recoverWorker();
+      if (mounted) {
+        readProgress();
+        watchProgress();
+      }
     } catch (e) {
       if (mounted) setState(() => status = 'DB 열기 실패 · $e');
     }
   }
 
-  Future<void> update() async {
-    if (busy) return;
-    final confirmed = await showDialog<bool>(
-      context: context,
-      builder: (_) => InstallDialog(installed: store!.updated != null),
-    );
-    if (!mounted || confirmed != true || busy) return;
-    setState(() {
-      busy = true;
-      status = '설치 준비 중';
-    });
-    final catalog = store!;
+  Future<void> recoverWorker() async {
+    final catalog = store;
+    final row = catalog?.pendingJob;
+    if (catalog == null ||
+        row == null ||
+        !['queued', 'running'].contains(row['status'])) {
+      return;
+    }
+    final id = row['id'] as String;
+    if (Platform.isAndroid &&
+        await Workmanager().isScheduledByUniqueName('$catalogTask-$id')) {
+      return;
+    }
+    final lock = await SyncLock.acquire(path);
+    if (lock == null) return;
     try {
-      catalog.setMetadata('downloadStatus', '다운로드 대기 중');
-      if (Platform.isAndroid) {
-        await Workmanager().registerOneOffTask(
-          catalogTask,
-          catalogTask,
-          inputData: {'path': path},
-          existingWorkPolicy: ExistingWorkPolicy.keep,
-          constraints: Constraints(networkType: NetworkType.connected),
+      if (catalog.job(id)?['status'] == row['status']) {
+        catalog.transaction(
+          () => catalog.endSync(
+            id,
+            SyncStatus.interrupted,
+            code: 'interrupted',
+            message: '마지막 안전 지점부터 재개할 수 있습니다.',
+          ),
         );
-        if (mounted) watchProgress();
-      } else {
-        watchProgress();
-        await downloadOnDesktop(path);
-        if (mounted) finishDownload();
       }
-    } catch (e) {
-      if (mounted) {
-        finishDownload();
-        setState(() {
-          status = '다운로드 중단 · $e';
-        });
-      }
+    } finally {
+      await lock.close();
     }
   }
 
-  void finishDownload() {
-    progressTimer?.cancel();
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    if (state == AppLifecycleState.resumed && store != null) readProgress();
+  }
+
+  Future<void> update({bool full = false}) async {
+    if (busy) return;
     final catalog = store!;
-    final updated = catalog.updated;
+    final pending = catalog.pendingJob;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (_) => InstallDialog(installed: catalog.updated != null),
+    );
+    if (!mounted || confirmed != true || busy) return;
+    final mode = full
+        ? SyncMode.full
+        : catalog.updated == null
+        ? SyncMode.initial
+        : SyncMode.incremental;
+    final id = pending?['id'] as String? ?? catalog.queueSync(mode);
+    catalog.db.execute(
+      "UPDATE sync_jobs SET status='queued',error_code=NULL,error_message=NULL WHERE id=? AND status IN ('interrupted','paused')",
+      [id],
+    );
+    readProgress();
+    try {
+      if (Platform.isAndroid) {
+        await Workmanager().registerOneOffTask(
+          '$catalogTask-$id',
+          catalogTask,
+          inputData: {'path': path, 'id': id},
+          existingWorkPolicy: ExistingWorkPolicy.keep,
+          constraints: Constraints(networkType: NetworkType.connected),
+        );
+      } else {
+        await downloadOnDesktop(path, id);
+      }
+    } catch (_) {
+      if (!mounted) return;
+      if (catalog.job(id)?['status'] == 'queued') {
+        catalog.endSync(
+          id,
+          SyncStatus.interrupted,
+          code: 'interrupted',
+          message: '작업을 시작할 수 없습니다. 재개하세요.',
+        );
+      }
+    }
+    if (mounted) readProgress();
+  }
+
+  String? lastJobStamp;
+  void readProgress() {
+    final catalog = store!;
+    final row = catalog.db
+        .select('SELECT * FROM sync_jobs ORDER BY rowid DESC LIMIT 1')
+        .firstOrNull;
+    final stamp = row == null
+        ? null
+        : "${row['id']}|${row['status']}|${row['updated_at']}";
+    if (stamp == lastJobStamp) return;
+    lastJobStamp = stamp;
     setState(() {
-      if (updated != lastUpdated) revision.value++;
-      lastUpdated = updated;
-      busy = false;
-      status = catalog.metadata('downloadStatus') ?? '';
+      if (catalog.updated != lastUpdated) {
+        revision.value++;
+        lastUpdated = catalog.updated;
+      }
+      busy = row != null && ['running', 'queued'].contains(row['status']);
+      status = row == null ? '' : jobLabel(row);
     });
   }
 
   void watchProgress() {
     progressTimer?.cancel();
-    progressTimer = Timer.periodic(const Duration(seconds: 1), (_) async {
-      if (checking || !mounted) return;
-      checking = true;
-      try {
-        if (Platform.isAndroid &&
-            !await Workmanager().isScheduledByUniqueName(catalogTask)) {
-          if (mounted) finishDownload();
-          return;
-        }
-        if (mounted) {
-          final message = store!.metadata('downloadStatus') ?? '다운로드 대기 중';
-          if (status != message) setState(() => status = message);
-        }
-      } catch (e) {
-        if (mounted) setState(() => status = '진행 상태 확인 실패 · $e');
-      } finally {
-        checking = false;
-      }
+    progressTimer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (mounted) readProgress();
     });
   }
 
@@ -285,6 +326,7 @@ class _LibraryState extends State<Library> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     progressTimer?.cancel();
     revision.dispose();
     store?.db.close();
@@ -317,10 +359,17 @@ class _LibraryState extends State<Library> {
       Icons.settings_outlined,
     ];
     final wide = MediaQuery.sizeOf(context).width >= 600;
+    final job = library.pendingJob;
     final syncAction = FilledButton.icon(
       onPressed: busy ? null : update,
       icon: const Icon(Icons.sync),
-      label: Text(library.updated == null ? '텍스트만 다운로드' : '재설치'),
+      label: Text(
+        job != null && !busy
+            ? '다운로드 재개'
+            : library.updated == null
+            ? '텍스트만 다운로드'
+            : '재설치',
+      ),
     );
     return Scaffold(
       appBar: AppBar(title: Text(names[tab])),
@@ -342,7 +391,21 @@ class _LibraryState extends State<Library> {
           Expanded(
             child: Column(
               children: [
-                if (busy) const LinearProgressIndicator(),
+                if (busy)
+                  LinearProgressIndicator(
+                    value:
+                        job == null || job['total'] == null || job['total'] == 0
+                        ? null
+                        : (job['completed'] as int) / (job['total'] as int),
+                  ),
+                if (job != null && job['phase'] != 'applying')
+                  TextButton(
+                    onPressed: () async {
+                      await cancelSync(path, library, job['id'] as String);
+                      if (mounted) readProgress();
+                    },
+                    child: const Text('다운로드 취소'),
+                  ),
                 if (status.isNotEmpty)
                   Padding(
                     padding: const EdgeInsets.all(8),
