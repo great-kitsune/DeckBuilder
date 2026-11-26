@@ -20,7 +20,23 @@ class _RoundViewState extends State<RoundView> {
       champion = record['opponent_champion'],
       notes = record['notes'];
   late String? result = record['result'];
-  void save(bool complete) {
+  late List<String?> sets = widget.catalog.games(widget.id);
+  void change(int index, String? value) {
+    final next = changeSet(sets, index, value);
+    if (sets.skip(index + 1).nonNulls.length >
+        next.skip(index + 1).nonNulls.length) {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(const SnackBar(content: Text('이후 세트 기록을 지웠습니다.')));
+    }
+    setState(() {
+      sets = next;
+      result = bo3Preview(sets);
+    });
+    if (record['status'] == 'draft') save(false, close: false);
+  }
+
+  void save(bool complete, {bool close = true}) {
     widget.catalog.saveRound(
       widget.id,
       stage: stage,
@@ -30,8 +46,9 @@ class _RoundViewState extends State<RoundView> {
       notes: notes,
       complete: complete,
       result: result,
+      sets: bo3 ? sets : null,
     );
-    Navigator.pop(context);
+    if (close) Navigator.pop(context);
   }
 
   @override
@@ -55,6 +72,21 @@ class _RoundViewState extends State<RoundView> {
       child: ListView(
         padding: const EdgeInsets.all(12),
         children: [
+          if (bo3) ...[
+            for (var i = 0; i < 3; i++)
+              ResultChoices(
+                label: '${i + 1}세트',
+                value: sets[i],
+                onChange:
+                    editing &&
+                        (i == 0 || (sets[i - 1] != null && sets[0] != 'draw'))
+                    ? (v) => change(i, v)
+                    : null,
+              ),
+            Text(
+              '${editing ? '잠정 결과' : '확정 결과'} · ${matchResults[result] ?? '미기록'}',
+            ),
+          ],
           if (!bo3)
             ResultChoices(
               label: 'BO1',

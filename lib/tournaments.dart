@@ -125,6 +125,17 @@ extension TournamentRecords on Catalog {
     return key;
   }
 
+  List<String?> games(String roundId) {
+    final slots = List<String?>.filled(3, null);
+    for (final row in db.select(
+      'SELECT game_number,result FROM round_games WHERE round_id=?',
+      [roundId],
+    )) {
+      slots[(row['game_number'] as int) - 1] = row['result'];
+    }
+    return slots;
+  }
+
   void saveRound(
     String id, {
     required String stage,
@@ -134,12 +145,31 @@ extension TournamentRecords on Catalog {
     String notes = '',
     required bool complete,
     String? result,
+    List<String?>? sets,
   }) {
     transaction(() {
       final r = round(id);
-      if (event(r['tournament_id'])['format'] == 'bo3' &&
-          (complete || result != null)) {
-        throw StateError('세트 기록이 필요합니다.');
+      if (event(r['tournament_id'])['format'] == 'bo3') {
+        final scores = sets ?? games(id);
+        result = bo3Preview(scores);
+        if (complete && result == null) throw StateError('1세트 결과가 필요합니다.');
+        final now = syncNow();
+        for (final (index, value) in scores.indexed) {
+          if (value == null) {
+            db.execute(
+              'DELETE FROM round_games WHERE round_id=? AND game_number=?',
+              [id, index + 1],
+            );
+          } else {
+            db.execute(
+              """INSERT INTO round_games VALUES(?,?,?,?,?) ON CONFLICT(round_id,game_number)
+              DO UPDATE SET result=excluded.result,updated_at=excluded.updated_at WHERE result<>excluded.result""",
+              [id, index + 1, value, now, now],
+            );
+          }
+        }
+      } else if (sets != null) {
+        throw StateError('BO1에는 세트를 기록할 수 없습니다.');
       }
       if (complete && result == null) throw StateError('라운드 결과가 필요합니다.');
       db.execute(
@@ -163,4 +193,34 @@ extension TournamentRecords on Catalog {
 String? snapshotName(Map row) {
   final value = row['deck_snapshot'];
   return value == null ? null : jsonDecode(value)['name'] as String?;
+}
+
+String? bo3Preview(List<String?> sets) {
+  if (sets.length != 3 ||
+      sets.nonNulls.any((v) => !matchResults.containsKey(v))) {
+    throw StateError('잘못된 세트 결과입니다.');
+  }
+  if (sets[0] == null || sets[0] == 'draw') {
+    if (sets[1] != null || sets[2] != null) {
+      throw StateError('1세트 이후 기록을 확인하세요.');
+    }
+    return sets[0];
+  }
+  if (sets[2] != null && sets[1] == null) throw StateError('2세트 결과가 필요합니다.');
+  final wins = sets.where((v) => v == 'win').length;
+  final losses = sets.where((v) => v == 'loss').length;
+  if (wins == losses) return 'draw';
+  return wins > losses ? 'win' : 'loss';
+}
+
+List<String?> changeSet(List<String?> sets, int index, String? value) {
+  if (index > 0 && (sets[0] == 'draw' || sets[index - 1] == null)) {
+    throw StateError('앞 세트를 먼저 기록하세요.');
+  }
+  final next = List<String?>.of(sets)..[index] = value;
+  if (value == null || (index == 0 && value == 'draw')) {
+    next.fillRange(index + 1, 3, null);
+  }
+  bo3Preview(next);
+  return next;
 }
