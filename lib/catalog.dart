@@ -8,6 +8,7 @@ part 'integrity.dart';
 part 'sync_state.dart';
 part 'catalog_delta.dart';
 part 'decks.dart';
+part 'tournaments.dart';
 part 'deck_sort.dart';
 part 'deck_recipe.dart';
 
@@ -32,7 +33,7 @@ class Filters {
   final all = <String>{};
 }
 
-const catalogSchemaVersion = 2;
+const catalogSchemaVersion = 3;
 
 class Catalog {
   final Database db;
@@ -46,7 +47,8 @@ class Catalog {
     if (version < catalogSchemaVersion) {
       transaction(() {
         if (db.userVersion == 0) _migrateLegacy();
-        createSyncSchema(db);
+        if (db.userVersion < 2) createSyncSchema(db);
+        createTournamentSchema(db);
         db.userVersion = catalogSchemaVersion;
       });
     }

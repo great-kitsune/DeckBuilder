@@ -16,7 +16,7 @@ void main() {
       );
       final c = Catalog(db);
       Catalog(db);
-      expect(db.userVersion, 2);
+      expect(db.userVersion, catalogSchemaVersion);
       expect(c.decks().single.name, 'same');
       expect(c.metadata('graphicsTheme'), 'saved');
       for (var i = 0; i < 55; i++) {

@@ -77,7 +77,7 @@ class _BackupViewState extends State<BackupView> {
         builder: (ctx) => AlertDialog(
           title: Text(full ? '전체 DB 교체 복원' : '사용자 데이터 교체 복원'),
           content: Text(
-            '복원할 덱 ${plan.decks}개 · 덱 항목 ${plan.entries}개 · 스포일러 ${plan.spoilers}개\n\n'
+            '복원할 대회 ${plan.tournaments}개 · 덱 ${plan.decks}개 · 덱 항목 ${plan.entries}개 · 스포일러 ${plan.spoilers}개\n\n'
             '${full ? '공식 DB와 사용자 데이터' : '덱, 스포일러 및 사용자 설정'}를 교체합니다. 계속하면 현재 데이터의 복구용 ZIP을 먼저 저장합니다.',
           ),
           actions: [

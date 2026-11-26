@@ -201,7 +201,7 @@ void main() {
           applyRestore(db, plan);
           expect(userHash(), before);
           expect(db.baseline?['index_hash'], full ? null : baseline);
-          expect(db.db.userVersion, 2);
+          expect(db.db.userVersion, catalogSchemaVersion);
           expect(db.inspect().damaged, 0);
         }
       },
