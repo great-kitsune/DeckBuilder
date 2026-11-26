@@ -47,12 +47,34 @@ void createTournamentSchema(Database db) {
 
 String eventDay(DateTime value) => value.toIso8601String().split('T').first;
 
+const _eventScores = """
+ SELECT t.*,count(CASE WHEN r.result='win' THEN 1 END) wins,
+ count(CASE WHEN r.result='loss' THEN 1 END) losses,
+ count(CASE WHEN r.result='draw' THEN 1 END) draws
+ FROM tournaments t LEFT JOIN tournament_rounds r ON t.id=r.tournament_id
+ AND r.status='completed' AND r.stage='swiss'
+ """;
+
+String eventScore(Map row) =>
+    "${placements[row['final_placement']] ?? '최종 성적 미지정'} / ${row['wins']}-${row['losses']}-${row['draws']}";
+
 extension TournamentRecords on Catalog {
   List<Row> get events => db.select(
-    'SELECT * FROM tournaments ORDER BY event_date DESC,created_at DESC,id',
+    '$_eventScores GROUP BY t.id ORDER BY t.event_date DESC,t.created_at DESC,t.id',
   );
   Row event(String id) =>
-      db.select('SELECT * FROM tournaments WHERE id=?', [id]).single;
+      db.select('$_eventScores WHERE t.id=? GROUP BY t.id', [id]).single;
+
+  void setPlacement(String id, String placement, {bool finish = false}) {
+    final now = syncNow();
+    db.execute(
+      """UPDATE tournaments SET final_placement=?,updated_at=?,
+      status=CASE WHEN ? THEN 'completed' ELSE status END,
+      finished_at=CASE WHEN ? THEN coalesce(finished_at,?) ELSE finished_at END WHERE id=?""",
+      [placement, now, finish ? 1 : 0, finish ? 1 : 0, now, id],
+    );
+  }
+
   List<Row> rounds(String id) => db.select(
     'SELECT * FROM tournament_rounds WHERE tournament_id=? ORDER BY round_number',
     [id],

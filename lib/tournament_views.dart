@@ -72,6 +72,7 @@ class _TournamentListState extends State<TournamentList> {
                           r['format'].toString().toUpperCase(),
                           snapshotName(r) ?? '덱 미지정',
                           r['status'] == 'active' ? '진행 중' : '종료',
+                          eventScore(r),
                         ].join(' · '),
                       ),
                       onTap: () => open(r['id']),
@@ -206,6 +207,27 @@ class TournamentDetail extends StatefulWidget {
 }
 
 class _TournamentDetailState extends State<TournamentDetail> {
+  Future<void> placement({bool finish = false}) async {
+    final current = widget.catalog.event(widget.id)['final_placement'];
+    final choice = await showDialog<String>(
+      context: context,
+      builder: (ctx) => SimpleDialog(
+        title: Text(finish ? '대회 종료 · 최종 성적 선택' : '최종 성적 기록'),
+        children: [
+          for (final e in placements.entries)
+            ListTile(
+              title: Text(e.value),
+              trailing: current == e.key ? const Icon(Icons.check) : null,
+              onTap: () => Navigator.pop(ctx, e.key),
+            ),
+        ],
+      ),
+    );
+    if (choice == null || !mounted) return;
+    widget.catalog.setPlacement(widget.id, choice, finish: finish);
+    setState(() {});
+  }
+
   Future<void> editRound(String id) async {
     await eventPage(context, RoundView(widget.catalog, id));
     if (mounted) setState(() {});
@@ -251,6 +273,11 @@ class _TournamentDetailState extends State<TournamentDetail> {
                 snapshotName(r) ?? '덱 미지정',
               ].join(' · '),
             ),
+            Text(
+              eventScore(r),
+              style: Theme.of(context).textTheme.headlineSmall,
+            ),
+            Text(r['status'] == 'completed' ? '종료' : '진행 중'),
             if (r['notes'] != '') Text(r['notes']),
             for (final stage in ['swiss', 'top_cut']) ...[
               Padding(
@@ -282,6 +309,15 @@ class _TournamentDetailState extends State<TournamentDetail> {
               icon: const Icon(Icons.add),
               label: const Text('라운드 추가'),
             ),
+            OutlinedButton(
+              onPressed: () => placement(),
+              child: const Text('최종 성적 기록'),
+            ),
+            if (r['status'] == 'active')
+              OutlinedButton(
+                onPressed: () => placement(finish: true),
+                child: const Text('대회 종료'),
+              ),
           ],
         ),
       ),
