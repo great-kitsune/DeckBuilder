@@ -1,5 +1,7 @@
 name: Card catalog
-on: pull_request
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, labeled, unlabeled]
 permissions:
   contents: read
 jobs:
@@ -15,7 +17,8 @@ jobs:
         env:
           BASE_SHA: ${{ github.event.pull_request.base.sha }}
           HEAD_BRANCH: ${{ github.head_ref }}
-        run: python3 .github/scripts/feature_version.py "$BASE_SHA" "$HEAD_BRANCH"
+          PR_LABELS: ${{ toJSON(github.event.pull_request.labels.*.name) }}
+        run: python3 .github/scripts/feature_version.py "$BASE_SHA" "$HEAD_BRANCH" "$PR_LABELS"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
