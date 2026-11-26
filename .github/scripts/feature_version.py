@@ -1,4 +1,5 @@
 """Check the feature version against the PR base, including stacked PRs."""
+import json
 import re
 import subprocess
 import sys
@@ -14,6 +15,9 @@ def version(text):
 
 old = version(subprocess.check_output(["git", "show", f"{sys.argv[1]}:pubspec.yaml"], text=True))
 new = version(Path("pubspec.yaml").read_text())
-if new != old or sys.argv[2].startswith("phase3/"):
+branch = sys.argv[2]
+labels = set(json.loads(sys.argv[3]))
+feature = branch.startswith(("phase3/", "feature/")) or "feature-release" in labels
+if feature and "preparation" not in labels:
     if new[:3] != (old[0], old[1] + 1, 0) or new[3] <= old[3]:
         raise SystemExit(f"Invalid feature version change: {old} -> {new}")

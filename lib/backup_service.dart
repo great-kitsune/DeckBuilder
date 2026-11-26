@@ -51,6 +51,41 @@ void _check(Database db) {
   );
 }
 
+// A valid SQLite file can still contain a round whose saved score disagrees
+// with the individual games. Validate the staged rows before replacing live data.
+void _checkRoundRecords(Database db) {
+  for (final row in db.select("""
+    SELECT t.format,r.result,
+      max(CASE WHEN g.game_number=1 THEN g.result END) first_game,
+      max(CASE WHEN g.game_number=2 THEN g.result END) second_game,
+      max(CASE WHEN g.game_number=3 THEN g.result END) third_game
+    FROM tournament_rounds r JOIN tournaments t ON t.id=r.tournament_id
+    LEFT JOIN round_games g ON r.id=g.round_id GROUP BY r.id""")) {
+    final sets = <String?>[
+      row['first_game'],
+      row['second_game'],
+      row['third_game'],
+    ];
+    if (row['format'] == 'bo1') {
+      _require(sets.nonNulls.isEmpty, 'BO1에 세트 결과가 있습니다.');
+    } else {
+      try {
+        _require(bo3Preview(sets) == row['result'], '세트 기록과 라운드 결과가 다릅니다.');
+      } on StateError {
+        throw const FormatException('BO3 세트 기록 순서가 잘못되었습니다.');
+      }
+    }
+  }
+  _require(
+    db.select(
+      """SELECT 1 FROM round_life l JOIN tournament_rounds r ON r.id=l.round_id
+      JOIN tournaments t ON t.id=r.tournament_id WHERE (t.format='bo1' AND l.game_number<>1)
+      OR (l.previous_life1 IS NULL)<>(l.previous_life2 IS NULL) LIMIT 1""",
+    ).isEmpty,
+    'Life 상태가 일치하지 않습니다.',
+  );
+}
+
 void _size(int bytes) =>
     _require(bytes <= backupByteLimit, '백업 크기 한도(384 MB)를 초과했습니다.');
 
@@ -279,6 +314,7 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
         }
       }
       _require(files.isEmpty, '참조되지 않은 백업 파일');
+      _checkRoundRecords(db);
       _check(db);
     });
     if (full) {
