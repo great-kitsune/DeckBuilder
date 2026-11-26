@@ -55,6 +55,33 @@ void main() {
       });
     },
   );
+  test(
+    'restore rejects inconsistent BO3 records before touching the live DB',
+    () {
+      final tmp = Directory.systemTemp.createTempSync();
+      addTearDown(() => tmp.deleteSync(recursive: true));
+      final path = '${tmp.path}/invalid.sqlite';
+      final c = Catalog(sqlite3.open(path));
+      addTearDown(c.db.close);
+      final id = c.saveEvent(name: 'Cup', date: '2026-11-26', format: 'bo3'),
+          round = c.addRound(id);
+      c.saveRound(
+        round,
+        stage: 'swiss',
+        complete: true,
+        sets: ['win', null, null],
+      );
+      c.db.execute("UPDATE round_games SET result='loss'");
+      final damaged = createBackup(path, false, '3');
+      c.db.execute("UPDATE round_games SET result='win'");
+      expect(
+        () => prepareRestore(damaged, false, tmp.path),
+        throwsFormatException,
+      );
+      expect(c.games(round), ['win', null, null]);
+      expect(eventScore(c.event(id)), '최종 성적 미지정 / 1-0-0');
+    },
+  );
   for (final full in [false, true]) {
     test(
       'format 1 schema 2 backup without tournament tables replaces history (full=$full)',
