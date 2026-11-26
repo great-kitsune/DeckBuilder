@@ -50,6 +50,13 @@ void createSyncSchema(Database db) {
 }
 
 extension SyncState on Catalog {
+  String newUuid() =>
+      db.select(
+            """SELECT lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||
+        substr(hex(randomblob(2)),2)||'-'||substr('89ab',(random() & 3)+1,1)||
+        substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6))) AS id""",
+          ).single['id']
+          as String;
   Row? get pendingJob =>
       db.select('SELECT * FROM sync_jobs WHERE $pendingSync').firstOrNull;
   Row? job(String id) =>
@@ -66,13 +73,7 @@ extension SyncState on Catalog {
         return;
       }
       final now = syncNow();
-      id =
-          db.select(
-                """SELECT lower(hex(randomblob(4))||'-'||hex(randomblob(2))||'-4'||
-        substr(hex(randomblob(2)),2)||'-'||substr('89ab',(random() & 3)+1,1)||
-        substr(hex(randomblob(2)),2)||'-'||hex(randomblob(6))) AS id""",
-              ).single['id']
-              as String;
+      id = newUuid();
       db.execute(
         "INSERT INTO sync_jobs(id,mode,status,started_at,updated_at) VALUES(?,?,'queued',?,?)",
         [id, mode.name, now, now],

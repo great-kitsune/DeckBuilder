@@ -34,6 +34,9 @@ jobs:
   sign:
     needs: build
     if: github.ref == 'refs/heads/main' && github.run_attempt == 1
+    permissions:
+      actions: read
+      contents: read
     environment: android-production
     runs-on: ubuntu-latest
     steps:
@@ -47,6 +50,8 @@ jobs:
           STORE_PASSWORD: ${{ secrets.ANDROID_STORE_PASSWORD }}
           KEY_PASSWORD: ${{ secrets.ANDROID_KEY_PASSWORD }}
           KEY_ALIAS: ${{ secrets.ANDROID_KEY_ALIAS }}
+          GH_TOKEN: ${{ github.token }}
+          EXTERNAL_RELEASE_FLOOR: ${{ vars.ANDROID_LAST_RELEASE_VERSION_CODE }}
           CERT_SHA256: ${{ vars.ANDROID_CERT_SHA256 }}
         run: |
           set -euo pipefail
@@ -56,6 +61,11 @@ jobs:
           trap 'rm -f "$key"' EXIT
           printf '%s' "$KEYSTORE_BASE64" | base64 --decode > "$key"
           tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/aapt" dump badging app-release.apk > "$RUNNER_TEMP/package.txt"
+          code=$(sed -nE "s/^package: .*versionCode='([0-9]+)'.*/\1/p" "$RUNNER_TEMP/package.txt")
+          prior=$(gh api --paginate "repos/$GITHUB_REPOSITORY/actions/workflows/android-release.yml/runs?branch=main&status=success&per_page=100" --jq '.workflow_runs[].run_number' | sort -nr | sed -n '1p')
+          [[ "$code" =~ ^[0-9]+$ && "${EXTERNAL_RELEASE_FLOOR:-0}" =~ ^[0-9]+$ ]]
+          (( code == 1000 + GITHUB_RUN_NUMBER && code > 1000 + ${prior:-0} && code > ${EXTERNAL_RELEASE_FLOOR:-0} ))
           "$tools/zipalign" -P 16 -f 4 app-release.apk aligned.apk
           "$tools/apksigner" sign --ks "$key" --ks-key-alias "$KEY_ALIAS" --ks-pass env:STORE_PASSWORD --key-pass env:KEY_PASSWORD --out DeckBuilder-release.apk aligned.apk
           "$tools/apksigner" verify --verbose --print-certs DeckBuilder-release.apk > "$RUNNER_TEMP/cert.txt"

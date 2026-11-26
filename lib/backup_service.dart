@@ -7,10 +7,10 @@ import 'package:crypto/crypto.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog.dart';
 
-const backupFormat = 1;
+const backupFormat = 2;
 const backupByteLimit = 384 * 1024 * 1024;
 const userSettings = ['thumbnailGrid', 'graphicsTheme'];
-const _users = {
+const _legacyUsers = {
   'decks': 'id,name',
   'spoiler_cards': 'id,name,norm,spoiler,active,effect,payload,photo',
   'spoiler_editions': 'id,card,set_code,number,rarity,payload,position',
@@ -18,6 +18,16 @@ const _users = {
   'replacements': 'local_id,official_id',
   'deck_entries': 'deck,zone,card,edition,quantity',
   'metadata': 'key,value',
+};
+const _users = {
+  ..._legacyUsers,
+  'tournaments':
+      'id,name,event_date,format,deck_id,deck_snapshot,notes,status,final_placement,created_at,updated_at,finished_at',
+  'tournament_rounds':
+      'id,tournament_id,round_number,stage,top_cut_stage,opponent_name,opponent_champion,status,result,notes,created_at,updated_at',
+  'round_games': 'round_id,game_number,result,created_at,updated_at',
+  'round_life':
+      'round_id,game_number,life1,life2,player,turn,previous_life1,previous_life2',
 };
 const _official = {
   'cards': 'id,name,norm,spoiler,active,effect,payload,photo',
@@ -60,6 +70,7 @@ Uint8List createBackup(String path, bool full, String appVersion) {
     final db = sqlite3.open(snapshot.path, mode: OpenMode.readOnly);
     String? updated;
     final schemaVersion = db.userVersion;
+    final tables = schemaVersion < 3 ? _legacyUsers : _users;
     try {
       _check(db);
       updated =
@@ -67,7 +78,7 @@ Uint8List createBackup(String path, bool full, String appVersion) {
                   .select("SELECT value FROM metadata WHERE key='updated'")
                   .firstOrNull?['value']
               as String?;
-      for (final entry in _users.entries) {
+      for (final entry in tables.entries) {
         final rows = <Json>[];
         for (final r in db.select(
           'SELECT ${entry.value} FROM ${entry.key} ${entry.key == 'metadata' ? 'WHERE $_preferences' : ''}',
@@ -93,7 +104,7 @@ Uint8List createBackup(String path, bool full, String appVersion) {
     _size(fileData.values.fold(0, (n, b) => n + b.length));
     fileData['manifest.json'] = utf8.encode(
       jsonEncode({
-        'format_version': backupFormat,
+        'format_version': schemaVersion < 3 ? 1 : backupFormat,
         'app_version': appVersion,
         'created_at': DateTime.now().toUtc().toIso8601String(),
         'catalog_updated_at': updated,
@@ -119,6 +130,7 @@ typedef BackupPreview = ({
   String stage,
   bool full,
   int decks,
+  int tournaments,
   int spoilers,
   int entries,
 });
@@ -170,7 +182,10 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
   }
   final m = jsonDecode(utf8.decode(files.remove('manifest.json')!)) as Json;
   _require(
-    m['format_version'] == backupFormat &&
+    (m['format_version'] == backupFormat ||
+            (m['format_version'] == 1 &&
+                m['schema_version'] is int &&
+                m['schema_version'] < 3)) &&
         m['schema_version'] is int &&
         m['schema_version'] <= catalogSchemaVersion,
     '지원하지 않는 백업 또는 DB 버전',
@@ -188,6 +203,7 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
   );
   final rows = jsonDecode(utf8.decode(files.remove('user_data.json')!)) as Json;
   final counts = m['counts'] as Json;
+  final userTables = m['format_version'] == 1 ? _legacyUsers : _users;
   final stage = '$scratch/validated.sqlite';
   _require(!File(stage).existsSync(), '임시 DB 경로 충돌');
   final db = sqlite3.open(stage);
@@ -207,7 +223,7 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
             .map((r) => r['name'])
             .toSet();
         _require(
-          [..._official.keys, ..._users.keys].every(tables.contains),
+          [..._official.keys, ...userTables.keys].every(tables.contains),
           '필수 DB 테이블 누락',
         );
         _check(raw);
@@ -224,7 +240,7 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
           'INSERT INTO main.metadata SELECT key,value FROM donor.metadata WHERE NOT ($_preferences)',
         );
       }
-      for (final t in _users.entries) {
+      for (final t in userTables.entries) {
         final records = rows[t.key] as List;
         _require(records.length == counts[t.key], '레코드 수 불일치 · ${t.key}');
         final columns = t.value.split(',');
@@ -275,6 +291,7 @@ BackupPreview prepareRestore(Uint8List bytes, bool full, String scratch) {
     return (
       stage: stage,
       full: full,
+      tournaments: counts['tournaments'] as int? ?? 0,
       decks: counts['decks'] as int,
       spoilers: counts['spoiler_cards'] as int,
       entries: counts['deck_entries'] as int,

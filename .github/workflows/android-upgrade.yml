@@ -2,6 +2,8 @@ name: Android in-place upgrade test
 on:
   pull_request:
     paths:
+      - 'pubspec.yaml'
+      - 'lib/catalog.dart'
       - 'android/app/build.gradle.kts'
       - '.github/workflows/android-release.yml'
       - '.github/workflows/android-upgrade.yml'

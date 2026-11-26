@@ -9,6 +9,13 @@ jobs:
       download: ${{ steps.apk.outputs.artifact-url }}
     steps:
       - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - name: Check feature version against PR base
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_BRANCH: ${{ github.head_ref }}
+        run: python3 .github/scripts/feature_version.py "$BASE_SHA" "$HEAD_BRANCH"
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
@@ -20,6 +27,12 @@ jobs:
       - run: flutter analyze
       - run: flutter test
       - run: flutter build apk --debug
+      - name: Verify packaged Android version name
+        run: |
+          expected=$(sed -nE 's/^version: ([0-9.]+)\+.*/\1/p' pubspec.yaml)
+          tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$tools/aapt" dump badging build/app/outputs/flutter-apk/app-debug.apk > "$RUNNER_TEMP/package.txt"
+          grep -F "versionName='$expected'" "$RUNNER_TEMP/package.txt"
       - name: Upload Android APK
         id: apk
         uses: actions/upload-artifact@v4
@@ -44,6 +57,10 @@ jobs:
         shell: pwsh
         run: |
           $bundle = Resolve-Path build/windows/x64/runner/Release
+          $version = (Select-String -Path pubspec.yaml -Pattern '^version: (\d+)\.(\d+)\.(\d+)\+').Matches[0]
+          $expected = (($version.Groups[1].Value, $version.Groups[2].Value, $version.Groups[3].Value) -join '.')
+          $info = (Get-Item "$bundle/deck_builder.exe").VersionInfo
+          if ("$($info.ProductMajorPart).$($info.ProductMinorPart).$($info.ProductBuildPart)" -ne $expected) { throw "Unexpected Windows version" }
           $vswhere = Join-Path ${env:ProgramFiles(x86)} 'Microsoft Visual Studio/Installer/vswhere.exe'
           $vs = & $vswhere -latest -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -property installationPath
           $crt = Get-ChildItem "$vs/VC/Redist/MSVC/*/x64/Microsoft.VC*.CRT" -Directory |

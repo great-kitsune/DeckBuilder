@@ -7,6 +7,7 @@ import 'package:sqlite3/sqlite3.dart' show sqlite3;
 import 'catalog.dart';
 import 'backup_view.dart';
 import 'deck_editor.dart';
+import 'tournament_views.dart';
 import 'card_image.dart';
 import 'search_view.dart';
 import 'spoiler.dart';
@@ -449,6 +450,12 @@ class _LibraryState extends State<Library> with WidgetsBindingObserver {
                           ),
                           const SizedBox(height: 12),
                           syncAction,
+                          ListTile(
+                            leading: const Icon(Icons.emoji_events_outlined),
+                            title: const Text('대회 기록'),
+                            onTap: () =>
+                                eventPage(context, TournamentList(library)),
+                          ),
                           ListTile(
                             leading: const Icon(Icons.search),
                             title: const Text('카드 검색'),
