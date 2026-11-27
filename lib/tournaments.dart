@@ -76,7 +76,12 @@ extension TournamentRecords on Catalog {
   }
 
   List<Row> rounds(String id) => db.select(
-    'SELECT * FROM tournament_rounds WHERE tournament_id=? ORDER BY round_number',
+    """SELECT r.*, g1.result game1, g2.result game2, g3.result game3
+       FROM tournament_rounds r
+       LEFT JOIN round_games g1 ON g1.round_id=r.id AND g1.game_number=1
+       LEFT JOIN round_games g2 ON g2.round_id=r.id AND g2.game_number=2
+       LEFT JOIN round_games g3 ON g3.round_id=r.id AND g3.game_number=3
+       WHERE r.tournament_id=? ORDER BY r.round_number""",
     [id],
   );
   Row round(String id) =>
@@ -217,7 +222,22 @@ String? snapshotName(Map row) {
   return value == null ? null : jsonDecode(value)['name'] as String?;
 }
 
-String? bo3Preview(List<String?> sets) {
+String roundResultLabel(String? result, {Iterable<String?> sets = const []}) {
+  if (result == null) return '미기록';
+  const marks = {'win': 'O', 'loss': 'X', 'draw': '-'};
+  final sequence = sets.nonNulls.map((set) => marks[set]!).join();
+  final label = matchResults[result]!;
+  return sequence.isEmpty ? label : '$label($sequence)';
+}
+
+// Version 0.6 and earlier allowed a third game after a second-game draw.
+bool hasLegacyThirdGame(List<String?> sets) =>
+    sets.length == 3 && sets[1] == 'draw' && sets[2] != null;
+
+bool canRecordSet(List<String?> sets, int index) =>
+    sets.take(index).every((s) => s == 'win' || s == 'loss');
+
+String? bo3Preview(List<String?> sets, {bool allowLegacyThirdGame = false}) {
   if (sets.length != 3 ||
       sets.nonNulls.any((v) => !matchResults.containsKey(v))) {
     throw StateError('잘못된 세트 결과입니다.');
@@ -229,6 +249,9 @@ String? bo3Preview(List<String?> sets) {
     return sets[0];
   }
   if (sets[2] != null && sets[1] == null) throw StateError('2세트 결과가 필요합니다.');
+  if (!allowLegacyThirdGame && hasLegacyThirdGame(sets)) {
+    throw StateError('무승부 이후 세트는 기록할 수 없습니다.');
+  }
   final wins = sets.where((v) => v == 'win').length;
   final losses = sets.where((v) => v == 'loss').length;
   if (wins == losses) return 'draw';
@@ -236,11 +259,11 @@ String? bo3Preview(List<String?> sets) {
 }
 
 List<String?> changeSet(List<String?> sets, int index, String? value) {
-  if (index > 0 && (sets[0] == 'draw' || sets[index - 1] == null)) {
+  if (!canRecordSet(sets, index)) {
     throw StateError('앞 세트를 먼저 기록하세요.');
   }
   final next = List<String?>.of(sets)..[index] = value;
-  if (value == null || (index == 0 && value == 'draw')) {
+  if (value == null || value == 'draw') {
     next.fillRange(index + 1, 3, null);
   }
   bo3Preview(next);
