@@ -298,7 +298,14 @@ class _TournamentDetailState extends State<TournamentDetail> {
                   ),
                   subtitle: Text(
                     round['status'] == 'completed'
-                        ? matchResults[round['result']]!
+                        ? roundResultLabel(
+                            round['result'],
+                            sets: [
+                              round['game1'],
+                              round['game2'],
+                              round['game3'],
+                            ],
+                          )
                         : '진행 중',
                   ),
                   onTap: () => editRound(round['id']),

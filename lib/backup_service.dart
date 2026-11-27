@@ -71,7 +71,10 @@ void _checkRoundRecords(Database db) {
       _require(sets.nonNulls.isEmpty, 'BO1에 세트 결과가 있습니다.');
     } else {
       try {
-        _require(bo3Preview(sets) == row['result'], '세트 기록과 라운드 결과가 다릅니다.');
+        _require(
+          bo3Preview(sets, allowLegacyThirdGame: true) == row['result'],
+          '세트 기록과 라운드 결과가 다릅니다.',
+        );
       } on StateError {
         throw const FormatException('BO3 세트 기록 순서가 잘못되었습니다.');
       }

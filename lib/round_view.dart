@@ -14,13 +14,24 @@ class _RoundViewState extends State<RoundView> {
   late final record = widget.catalog.round(widget.id);
   late final bo3 =
       widget.catalog.event(record['tournament_id'])['format'] == 'bo3';
-  late bool editing = record['status'] == 'draft';
+  late final legacy = bo3 && hasLegacyThirdGame(sets);
+  late bool editing = record['status'] == 'draft' && !legacy;
   late String stage = record['stage'], cut = record['top_cut_stage'] ?? 'top8';
   late String opponent = record['opponent_name'],
       champion = record['opponent_champion'],
       notes = record['notes'];
   late String? result = record['result'];
   late List<String?> sets = widget.catalog.games(widget.id);
+  void beginEdit() {
+    setState(() {
+      editing = true;
+      if (legacy) {
+        sets = changeSet(sets, 1, 'draw');
+        result = bo3Preview(sets);
+      }
+    });
+  }
+
   void change(int index, String? value) {
     final next = changeSet(sets, index, value);
     if (sets.skip(index + 1).nonNulls.length >
@@ -33,7 +44,7 @@ class _RoundViewState extends State<RoundView> {
       sets = next;
       result = bo3Preview(sets);
     });
-    if (record['status'] == 'draft') save(false, close: false);
+    if (record['status'] == 'draft' && !legacy) save(false, close: false);
   }
 
   void save(bool complete, {bool close = true}) {
@@ -77,14 +88,12 @@ class _RoundViewState extends State<RoundView> {
               ResultChoices(
                 label: '${i + 1}세트',
                 value: sets[i],
-                onChange:
-                    editing &&
-                        (i == 0 || (sets[i - 1] != null && sets[0] != 'draw'))
+                onChange: editing && canRecordSet(sets, i)
                     ? (v) => change(i, v)
                     : null,
               ),
             Text(
-              '${editing ? '잠정 결과' : '확정 결과'} · ${matchResults[result] ?? '미기록'}',
+              '${editing || record['status'] == 'draft' ? '잠정 결과' : '확정 결과'} · ${roundResultLabel(result, sets: sets)}',
             ),
           ],
           if (!bo3)
@@ -93,11 +102,14 @@ class _RoundViewState extends State<RoundView> {
               value: result,
               onChange: editing ? (v) => setState(() => result = v) : null,
             ),
-          if (!editing)
-            OutlinedButton(
-              onPressed: () => setState(() => editing = true),
-              child: const Text('결과 수정'),
+          if (legacy)
+            Text(
+              editing
+                  ? '이전 규칙의 3세트 기록을 제외했습니다. 저장하면 변경 사항을 반영합니다.'
+                  : '이전 규칙으로 2세트 무승부 이후 3세트가 기록된 라운드입니다.',
             ),
+          if (!editing)
+            OutlinedButton(onPressed: beginEdit, child: const Text('결과 수정')),
           if (editing) ...[
             FilledButton(
               onPressed: result == null ? null : () => save(true),
@@ -107,7 +119,7 @@ class _RoundViewState extends State<RoundView> {
               onPressed: () => save(false),
               child: const Text('미완료로 저장'),
             ),
-            if (record['status'] == 'completed')
+            if (record['status'] == 'completed' || legacy)
               TextButton(
                 onPressed: () => Navigator.pop(context),
                 child: const Text('수정 취소'),
