@@ -26,6 +26,7 @@ const _users = {
   'tournament_rounds':
       'id,tournament_id,round_number,stage,top_cut_stage,opponent_name,opponent_champion,status,result,notes,created_at,updated_at',
   'round_games': 'round_id,game_number,result,created_at,updated_at',
+  // Preserve archived 0.5.0 rows when users restore or re-export their backups.
   'round_life':
       'round_id,game_number,life1,life2,player,turn,previous_life1,previous_life2',
 };

@@ -3,8 +3,6 @@ import 'dart:io';
 import 'package:archive/archive.dart';
 import 'package:deck_builder/backup_service.dart';
 import 'package:deck_builder/catalog.dart';
-import 'package:deck_builder/life_view.dart';
-import 'package:flutter/material.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:sqlite3/sqlite3.dart';
 import 'catalog_test.dart' show card, edition;
@@ -113,30 +111,49 @@ void main() {
       },
     );
   }
-  testWidgets(
-    'Life tools work on landscape and desktop and never complete a match',
-    (tester) async {
-      final c = Catalog(sqlite3.openInMemory());
-      addTearDown(c.db.close);
-      final r = c.addRound(
-        c.saveEvent(name: 'Cup', date: '2026-11-26', format: 'bo3'),
-      );
-      tester.view.devicePixelRatio = 1;
-      addTearDown(tester.view.reset);
-      for (final size in [const Size(640, 360), const Size(1080, 720)]) {
-        tester.view.physicalSize = size;
-        await tester.pumpWidget(MaterialApp(home: LifeView(c, r)));
-        await tester.pumpAndSettle();
-        if (find.text('Life 시작').evaluate().isNotEmpty) {
-          await tester.tap(find.text('Life 시작'));
-          await tester.pumpAndSettle();
-        }
-        await tester.ensureVisible(find.text('-5').first);
-        await tester.tap(find.text('-5').first);
-        await tester.pump();
-        expect(c.round(r)['status'], 'draft');
-        expect(tester.takeException(), isNull);
-      }
-    },
-  );
+  for (final full in [false, true]) {
+    test(
+      'schema 3 backup preserves archived rows and BO3 results (full=$full)',
+      () {
+        final root = Directory.systemTemp.createTempSync();
+        addTearDown(() => root.deleteSync(recursive: true));
+        final path = '${root.path}/source.sqlite';
+        final source = Catalog(sqlite3.open(path));
+        addTearDown(source.db.close);
+        final event = source.saveEvent(
+          name: 'Cup',
+          date: '2026-11-26',
+          format: 'bo3',
+        );
+        final round = source.addRound(event);
+        source.saveRound(
+          round,
+          stage: 'swiss',
+          complete: true,
+          sets: ['win', 'loss', 'draw'],
+        );
+        source.setPlacement(event, 'champion', finish: true);
+        // Values from the retired tool exist in both kinds of 0.5.0 backup.
+        final archived = [round, 2, -4, 7, 2, 9, 1, 7];
+        source.db.execute(
+          'INSERT INTO round_life VALUES(?,?,?,?,?,?,?,?)',
+          archived,
+        );
+        final plan = prepareRestore(
+          createBackup(path, full, '0.5.0+5'),
+          full,
+          root.path,
+        );
+        final restored = Catalog(sqlite3.openInMemory());
+        addTearDown(restored.db.close);
+        applyRestore(restored, plan);
+        expect(restored.games(round), ['win', 'loss', 'draw']);
+        expect(eventScore(restored.event(event)), '우승 / 0-0-1');
+        expect(
+          restored.db.select('SELECT * FROM round_life').single.values.toList(),
+          archived,
+        );
+      },
+    );
+  }
 }
