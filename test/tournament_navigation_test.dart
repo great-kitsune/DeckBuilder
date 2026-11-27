@@ -35,6 +35,7 @@ void main() {
       await tap('BO3');
       await tap('저장');
       await tap('라운드 추가');
+      expect(find.text('Life · 턴 관리'), findsNothing);
       t.view.physicalSize = const Size(800, 390);
       await t.pumpAndSettle();
       for (int i = 1; i <= 3; i++) {

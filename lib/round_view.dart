@@ -1,6 +1,5 @@
 import 'package:flutter/material.dart';
 import 'catalog.dart';
-import 'life_view.dart';
 import 'tournament_views.dart' show confirmRemoval;
 
 class RoundView extends StatefulWidget {
@@ -114,16 +113,6 @@ class _RoundViewState extends State<RoundView> {
                 child: const Text('수정 취소'),
               ),
           ],
-          OutlinedButton.icon(
-            icon: const Icon(Icons.favorite_outline),
-            label: const Text('Life · 턴 관리'),
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(
-                builder: (_) => LifeView(widget.catalog, widget.id),
-              ),
-            ),
-          ),
           DropdownButtonFormField<String>(
             initialValue: stage,
             decoration: const InputDecoration(labelText: '라운드 종류'),
